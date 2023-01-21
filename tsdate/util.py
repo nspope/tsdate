@@ -300,3 +300,57 @@ def add_sampledata_times(samples, sites_time):
     copy.sites_time[:] = sites_time
     copy.finalise()
     return copy
+
+
+def simpson_rule(timepoints, k, direction="forward"):
+    """
+    Calculate the k-th forward or backward quadrature rule for the set of time
+    intervals defined by `timepoints`. Returns a set of quadrature weights for
+    the k subintervals starting from the first (if direction is `forward`) or last
+    (if direction is `backward`) timepoint.
+
+    If the number of subintervals is even then Simpson's 1/3 rule is used. If
+    the number of subintervals is odd, then the trapezoidal rule is used for
+    the last subinterval.
+
+    :param numpy.ndarray timepoints: A 1D array of timepoints in increasing order
+    :param int k: The number of subintervals to include in the rule
+    :param str direction: Include subintervals starting from the first (`forward`)
+        or last (`backward`) timepoint.
+
+    :return: An array of quadrature weights
+    :rtype: numpy.ndarray
+    """
+    assert sorted(timepoints), "Timepoints must be in increasing order"
+    assert isinstance(k, int) and k >= 0, "Must use at least one subinterval"
+
+    w = np.zeros(timepoints.size)
+    if k == 0:
+        if direction == "forward":
+            w[0] = 1
+        elif direction == "backward":
+            w[-1] = 1
+        else:
+            raise ValueError("Direction must be one of 'forward' or 'backward'")
+    else:
+        if direction == "forward":
+            h = np.diff(timepoints)
+        elif direction == "backward":
+            h = -np.diff(timepoints[::-1])
+        else:
+            raise ValueError("Direction must be one of 'forward' or 'backward'")
+        if k == 1 or k % 2:
+            # use trapezoid rule for last interval
+            w[k] += h[k - 1] / 2
+            w[k - 1] += h[k - 1] / 2
+        if k > 1:
+            for i in range(0, k // 2):
+                a = (h[2 * i] + h[2 * i + 1]) / 6
+                w[2 * i] += a * (2 - h[2 * i + 1] / h[2 * i])
+                w[2 * i + 1] += (
+                    a * (h[2 * i] + h[2 * i + 1]) ** 2 / (h[2 * i] * h[2 * i + 1])
+                )
+                w[2 * i + 2] += a * (2 - h[2 * i] / h[2 * i + 1])
+        if direction == "backward":
+            w = np.flip(w)
+    return w

@@ -31,7 +31,8 @@ import unittest
 import msprime
 import numpy as np
 import pytest
-import scipy
+import scipy.integrate
+import scipy.stats
 import tsinfer
 import tskit
 import utility_functions
@@ -51,6 +52,7 @@ from tsdate.prior import gamma_approx
 from tsdate.prior import PriorParams
 from tsdate.prior import SpansBySamples
 from tsdate.util import nodes_time_unconstrained
+from tsdate.util import simpson_rule
 
 
 class TestBasicFunctions:
@@ -1967,3 +1969,42 @@ class TestHistoricalExample:
             reinferred_ts.tables.nodes.time[reinferred_ts.samples()],
             ts.tables.nodes.time[ts.samples()],
         )
+
+
+class TestQuadratureRules:
+    def test_inside_rule(self):
+        def test_func(t, tmax):
+            return np.where(t < tmax, scipy.stats.poisson.pmf(8, tmax - t), 0.0)
+
+        timepoints = np.array([0, 3, 8, 12, 20, 25, 31])
+        for k in range(1, timepoints.size - 1):
+            fx = test_func(timepoints, timepoints[k])
+            fy = scipy.integrate.simpson(fx[: k + 1], timepoints[: k + 1], even="first")
+            weights = simpson_rule(timepoints, k, "forward")
+            assert np.isclose(fy, np.sum(weights * fx))
+        weights = simpson_rule(timepoints, 0, "forward")
+        assert np.array_equal(np.eye(timepoints.size)[:, 0], weights)
+
+    def test_outside_rule(self):
+        def test_func(t, tmin):
+            return np.where(t > tmin, scipy.stats.poisson.pmf(8, t - tmin), 0.0)
+
+        timepoints = np.array([0, 3, 8, 12, 20, 25, 31])
+        for k in range(2, timepoints.size):
+            weights = simpson_rule(timepoints, k - 1, "backward")
+            fx = test_func(timepoints, timepoints[-k])
+            fy = scipy.integrate.simpson(fx[-k:], timepoints[-k:], even="last")
+            assert np.isclose(fy, np.sum(weights * fx))
+        weights = simpson_rule(timepoints, 0, "backward")
+        assert np.array_equal(np.eye(timepoints.size)[:, -1], weights)
+
+    def test_average_rule(self):
+        def test_func(t):
+            return t * scipy.stats.gamma.pdf(t, 2.5, scale=1)
+
+        timepoints = np.array([0, 3, 8, 12, 20, 25, 31])
+        weights = simpson_rule(timepoints, timepoints.size - 1, "backward") * 0.5
+        weights += simpson_rule(timepoints, timepoints.size - 1, "forward") * 0.5
+        fx = test_func(timepoints)
+        fy = scipy.integrate.simpson(fx, timepoints, even="avg")
+        assert np.isclose(fy, np.sum(weights * fx))

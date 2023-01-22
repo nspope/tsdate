@@ -726,6 +726,38 @@ class TestLikelihoodClass:
                 upper_tri = lik.get_mut_lik_upper_tri(e)
                 assert np.allclose(lik.rowsum_upper_tri(upper_tri)[::-1], cumul_pois)
 
+    def test_quadrature_functions(self):
+        ts = utility_functions.two_tree_mutation_ts()
+        grid = np.array([0, 1, 3, 6, 7, 9])
+        eps = 0
+        mut_rate = 1
+        lik = Likelihoods(ts, grid, mut_rate, eps, standardize=False)
+        lik.precalculate_mutation_likelihoods()
+        for e in ts.edges():
+            if e.child == 3 and e.parent == 4:
+                exp_branch_muts = 2
+                exp_span = 0.2
+                assert e.right - e.left == exp_span
+                assert lik.mut_edges[e.id] == exp_branch_muts
+                cumul_pois_fwd = []
+                for k in range(grid.size):
+                    pois_lambda = (grid[k] - grid[:k+1]) * mut_rate * exp_span
+                    pois_pmf = self.poisson(pois_lambda, exp_branch_muts, standardize=False)
+                    cumul_pois_fwd.append(
+                        scipy.integrate.simpson(pois_pmf, grid[:k+1], even='first')
+                    )
+                lower_tri = lik.get_mut_lik_lower_tri(e) * lik.inside_quadrature_weights
+                assert np.allclose(lik.rowsum_lower_tri(lower_tri), cumul_pois_fwd)
+                cumul_pois_bwd = []
+                for k in range(grid.size):
+                    pois_lambda = (grid[k:] - grid[k]) * mut_rate * exp_span
+                    pois_pmf = self.poisson(pois_lambda, exp_branch_muts, standardize=False)
+                    cumul_pois_bwd.append(
+                        scipy.integrate.simpson(pois_pmf, grid[k:], even='last')
+                    )
+                upper_tri = lik.get_mut_lik_upper_tri(e) * lik.outside_quadrature_weights
+                assert np.allclose(lik.rowsum_upper_tri(upper_tri), cumul_pois_bwd)
+
     def test_no_theta_class_loglikelihood(self):
         ts = utility_functions.two_tree_mutation_ts()
         grid = np.array([0, 1, 2])
@@ -1977,26 +2009,22 @@ class TestQuadratureRules:
             return np.where(t < tmax, scipy.stats.poisson.pmf(8, tmax - t), 0.0)
 
         timepoints = np.array([0, 3, 8, 12, 20, 25, 31])
-        for k in range(1, timepoints.size - 1):
+        for k in range(timepoints.size):
             fx = test_func(timepoints, timepoints[k])
             fy = scipy.integrate.simpson(fx[: k + 1], timepoints[: k + 1], even="first")
             weights = simpson_rule(timepoints, k, "forward")
             assert np.isclose(fy, np.sum(weights * fx))
-        weights = simpson_rule(timepoints, 0, "forward")
-        assert np.array_equal(np.eye(timepoints.size)[:, 0], weights)
 
     def test_outside_rule(self):
         def test_func(t, tmin):
             return np.where(t > tmin, scipy.stats.poisson.pmf(8, t - tmin), 0.0)
 
         timepoints = np.array([0, 3, 8, 12, 20, 25, 31])
-        for k in range(2, timepoints.size):
-            weights = simpson_rule(timepoints, k - 1, "backward")
+        for k in range(1, timepoints.size+1):
             fx = test_func(timepoints, timepoints[-k])
             fy = scipy.integrate.simpson(fx[-k:], timepoints[-k:], even="last")
+            weights = simpson_rule(timepoints, k - 1, "backward")
             assert np.isclose(fy, np.sum(weights * fx))
-        weights = simpson_rule(timepoints, 0, "backward")
-        assert np.array_equal(np.eye(timepoints.size)[:, -1], weights)
 
     def test_average_rule(self):
         def test_func(t):

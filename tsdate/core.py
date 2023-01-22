@@ -884,6 +884,7 @@ class InOutAlgorithms:
 
         return self.lik.timepoints[np.array(maximized_node_times).astype("int")]
 
+
     # TODO eventually just wrap into original functions as an option
     def inside_pass_integrate(
         self, *, standardize=True, cache_inside=False, progress=None
@@ -928,10 +929,10 @@ class InOutAlgorithms:
                 if edge.child in self.fixednodes:
                     # NB: geometric scaling works exactly when all nodes fixed in graph
                     # but is an approximation when times are unknown.
-                    # daughter_val = self.lik.scale_geometric(
-                    #    spanfrac, inside[edge.child]
-                    # )
-                    # TODO: Need to think about whether scaling make sense with quadrature
+                    #daughter_val = self.lik.scale_geometric(
+                    #   spanfrac, inside[edge.child]
+                    #)
+                    # TODO: think about how to use scaling, b/c points can be negative w/ quad rule
                     daughter_val = inside[edge.child]
                     edge_lik = self.lik.get_fixed(daughter_val, edge)
                 else:
@@ -943,10 +944,10 @@ class InOutAlgorithms:
                             "The input tree sequence includes "
                             "dangling nodes: please simplify it"
                         )
-                    # daughter_val = self.lik.scale_geometric(
-                    #    spanfrac, self.lik.make_lower_tri(inside[edge.child])
-                    # )
-                    # TODO: Need to think about whether scaling make sense with quadrature
+                    #daughter_val = self.lik.scale_geometric(
+                    #   spanfrac, self.lik.make_lower_tri(inside[edge.child])
+                    #)
+                    # TODO: think about how to use scaling, b/c points can be negative w/ quad rule
                     daughter_val = self.lik.make_lower_tri(inside[edge.child])
                     daughter_val *= self.lik.inside_quadrature_weights
                     edge_lik = self.lik.get_inside(daughter_val, edge)
@@ -966,7 +967,7 @@ class InOutAlgorithms:
         self.denominator = denominator
 
     # TODO eventually just wrap into original functions as an option
-    def outside_pass_integrated(
+    def outside_pass_integrate(
         self,
         *,
         standardize=False,
@@ -996,8 +997,8 @@ class InOutAlgorithms:
             grid_data=0, probability_space=base.LIN
         )
         for root, span_when_root in self.root_spans.items():
-            # outside[root] = span_when_root / self.spans[root]
-            # TODO: need to think about how scaling works with quadrature
+            #outside[root] = span_when_root / self.spans[root]
+            # TODO: think about how to use scaling, b/c points can be negative w/ quad rule
             outside[root] = self.lik.identity_constant
         outside.force_probability_space(self.inside.probability_space)
 
@@ -1031,10 +1032,10 @@ class InOutAlgorithms:
                         self.inside[edge.parent], self.g_i[edge.id], div_0_null=True
                     )
                 except AttributeError:  # we haven't cached g_i so we recalculate
-                    # daughter_val = self.lik.scale_geometric(
-                    #    spanfrac, self.lik.make_lower_tri(self.inside[edge.child])
-                    # )
-                    # TODO: need to think about how scaling works with quadrature
+                    #daughter_val = self.lik.scale_geometric(
+                    #   spanfrac, self.lik.make_lower_tri(self.inside[edge.child])
+                    #)
+                    # TODO: think about how to use scaling, b/c points can be negative w/ quad rule
                     daughter_val = self.lik.make_lower_tri(self.inside[edge.child])
                     daughter_val *= self.lik.inside_quadrature_weights
                     edge_lik = self.lik.get_inside(daughter_val, edge)
@@ -1042,21 +1043,20 @@ class InOutAlgorithms:
                     inside_div_gi = self.lik.ratio(
                         self.inside[edge.parent], cur_g_i, div_0_null=True
                     )
-                # parent_val = self.lik.scale_geometric(
-                #    spanfrac,
-                #    self.lik.make_upper_tri(
-                #        self.lik.combine(outside[edge.parent], inside_div_gi)
-                #    ),
-                # )
-                parent_val = self.lik.make_upper_tri(
-                    self.lik.combine(outside[edge.parent], inside_div_gi)
-                )
+                #parent_val = self.lik.scale_geometric(
+                #   spanfrac,
+                #   self.lik.make_upper_tri(
+                #       self.lik.combine(outside[edge.parent], inside_div_gi)
+                #   ),
+                #)
+                # TODO: think about how to use scaling, b/c points can be negative w/ quad rule
+                parent_val = self.lik.make_upper_tri(self.lik.combine(outside[edge.parent], inside_div_gi))
                 if standardize:
                     parent_val = self.lik.ratio(parent_val, np.max(parent_val))
                 parent_val *= self.lik.outside_quadrature_weights
                 edge_lik = self.lik.get_outside(parent_val, edge)
                 val = self.lik.combine(val, edge_lik)
-
+    
             # vv[0] = 0  # Seems a hack: internal nodes should be allowed at time 0
             assert self.denominator[edge.child] > self.lik.null_constant
             outside[child] = self.lik.ratio(val, self.denominator[child])
@@ -1067,13 +1067,6 @@ class InOutAlgorithms:
             grid_data=self.lik.combine(self.inside.grid_data, outside.grid_data),
             fixed_data=np.nan,
         )  # We should never use the posterior for a fixed node
-        quadrature_weights = 0.5 * (
-            util.simpson_rule(posterior.timepoints, direction="forward")
-            + util.simpson_rule(posterior.timepoints, direction="backward")
-        )
-        for u in posterior.nonfixed_nodes:
-            norm = np.sum(posterior[u] * quadrature_weights)
-            posterior[u] /= norm
         return posterior
 
 
@@ -1119,7 +1112,7 @@ def posterior_mean_var(ts, posterior, *, fixed_node_set=None):
 
 
 # TODO: combine with function above
-def posterior_mean_var_integrated(ts, posterior, *, fixed_node_set=None):
+def posterior_mean_var_integrate(ts, posterior, *, fixed_node_set=None):
     """
     Mean and variance of node age. Fixed nodes will be given a mean
     of their exact time in the tree sequence, and zero variance (as long as they are
@@ -1329,6 +1322,8 @@ def get_dates(
     cache_inside=False,
     probability_space=base.LOG,
     integrate=False,
+    timepoints=21, #DEBUG
+    point_prior=True, #DEBUG
 ):
     """
     Infer dates for the nodes in a tree sequence, returning an array of inferred dates
@@ -1364,6 +1359,9 @@ def get_dates(
             eps=eps,
             progress=progress,
             approximate_priors=approx_priors,
+            timepoints=timepoints, #DEBUG
+            point_prior=point_prior, #DEBUG
+            prior_distribution="lognorm", #DEBUG
         )
     else:
         logging.info("Using user-specified priors")
@@ -1380,7 +1378,7 @@ def get_dates(
             priors.timepoints,
             mutation_rate,
             recombination_rate,
-            eps=eps,
+            eps=0.0 if integrate else eps,
             fixed_node_set=fixed_nodes,
             progress=progress,
         )
@@ -1400,17 +1398,24 @@ def get_dates(
 
     dynamic_prog = InOutAlgorithms(priors, liklhd, progress=progress)
     if integrate:
-        dynamic_prog.inside_pass_integrated(cache_inside=False)
+        dynamic_prog.inside_pass_integrate(cache_inside=False)
     else:
         dynamic_prog.inside_pass(cache_inside=False)
 
     posterior = None
     if method == "inside_outside":
         if integrate:
-            posterior = dynamic_prog.outside_pass_integrated(
+            posterior = dynamic_prog.outside_pass_integrate(
                 standardize=outside_standardize, ignore_oldest_root=ignore_oldest_root
             )
-            tree_sequence, mn_post, _ = posterior_mean_var_integrated(
+            quadrature_weights = 0.5 * (
+                util.simpson_rule(posterior.timepoints, direction="forward")
+                + util.simpson_rule(posterior.timepoints, direction="backward")
+            )
+            for u in posterior.nonfixed_nodes:
+                norm = np.sum(posterior[u] * quadrature_weights)
+                posterior[u] /= norm
+            tree_sequence, mn_post, _ = posterior_mean_var_integrate(
                 tree_sequence, posterior, fixed_node_set=fixed_nodes
             )
         else:
@@ -1443,4 +1448,6 @@ def get_dates(
         priors.timepoints,
         eps,
         priors.nonfixed_nodes,
+        dynamic_prog.inside, #DEBUG
+        priors, #DEBUG
     )

@@ -10,4 +10,5 @@ data/prior_1000df.txt
 *.ipynb
 .ipynb*
 *.swp
+build/
 

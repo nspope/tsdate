@@ -302,7 +302,7 @@ def add_sampledata_times(samples, sites_time):
     return copy
 
 
-def simpson_rule(timepoints, k, direction="forward"):
+def simpson_rule(timepoints, k=None, direction="forward"):
     """
     Calculate the k-th forward or backward quadrature rule for the set of time
     intervals defined by `timepoints`. Returns a set of quadrature weights for
@@ -322,17 +322,15 @@ def simpson_rule(timepoints, k, direction="forward"):
     :rtype: numpy.ndarray
     """
     assert sorted(timepoints), "Timepoints must be in increasing order"
-    assert isinstance(k, int) and k >= 0, "Must use at least one subinterval"
+    if k is not None:
+        assert (
+            isinstance(k, int) and 0 <= k < timepoints.size
+        ), "Order must be positive and less than grid size"
+    else:
+        k = timepoints.size - 1
 
     w = np.zeros(timepoints.size)
-    if k == 0:
-        if direction == "forward":
-            w[0] = 1
-        elif direction == "backward":
-            w[-1] = 1
-        else:
-            raise ValueError("Direction must be one of 'forward' or 'backward'")
-    else:
+    if k > 0:
         if direction == "forward":
             h = np.diff(timepoints)
         elif direction == "backward":

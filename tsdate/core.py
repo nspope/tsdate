@@ -122,6 +122,33 @@ class Likelihoods:
             ]
         )
 
+        # Compute quadrature rules
+        self.inside_quadrature_weights = self.make_inside_quadrature(self.timepoints)
+        self.outside_quadrature_weights = self.make_outside_quadrature(self.timepoints)
+
+    @staticmethod
+    def make_inside_quadrature(grid):
+        """
+        Create a lower triangular operator that does quadrature
+        for a function sampled on an irregular grid
+        """
+        operator = np.zeros((grid.size, grid.size))
+        for k in range(grid.size):
+            operator[k, :] = util.simpson_rule(grid, k, "forward")
+        return operator[np.tril_indices(grid.size)]
+
+    @staticmethod
+    def make_outside_quadrature(grid):
+        """
+        Create an upper triangular operator that does quadrature
+        for a function sampled on an irregular grid
+        """
+        operator = np.zeros((grid.size, grid.size))
+        for k in range(grid.size):
+            operator[k, :] = util.simpson_rule(grid, k, "backward")
+        operator = operator[::-1]
+        return operator[np.triu_indices(grid.size)]
+
     @staticmethod
     def get_mut_edges(ts):
         """
@@ -857,6 +884,198 @@ class InOutAlgorithms:
 
         return self.lik.timepoints[np.array(maximized_node_times).astype("int")]
 
+    # TODO eventually just wrap into original functions as an option
+    def inside_pass_integrate(
+        self, *, standardize=True, cache_inside=False, progress=None
+    ):
+        """
+        Use dynamic programming to find approximate posterior to sample from,
+        using quadrature to approximate integrals over child ages
+        """
+
+        # TODO just need to make sure logsumexp does the right thing w/ weight for logspace
+        assert (
+            self.priors.probability_space == base.LIN
+        ), "Only implemented for linear space"
+
+        if progress is None:
+            progress = self.progress
+        inside = self.priors.clone_with_new_data(  # store inside matrix values
+            grid_data=np.nan, fixed_data=self.lik.identity_constant
+        )
+        if cache_inside:
+            g_i = np.full(
+                (self.ts.num_edges, self.lik.grid_size), self.lik.identity_constant
+            )
+        denominator = np.full(self.ts.num_nodes, np.nan)
+        # Iterate through the nodes via groupby on parent node
+        for parent, edges in tqdm(
+            self.edges_by_parent_asc(),
+            desc="Inside",
+            total=inside.num_nonfixed,
+            disable=not progress,
+        ):
+            """
+            for each node, find the conditional prob of age at every time
+            in time grid
+            """
+            if parent in self.fixednodes:
+                continue  # there is no hidden state for this parent - it's fixed
+            val = self.priors[parent].copy()
+            for edge in edges:
+                spanfrac = edge.span / self.spans[edge.child]
+                # Calculate vals for each edge
+                if edge.child in self.fixednodes:
+                    # NB: geometric scaling works exactly when all nodes fixed in graph
+                    # but is an approximation when times are unknown.
+                    # daughter_val = self.lik.scale_geometric(
+                    #    spanfrac, inside[edge.child]
+                    # )
+                    # TODO: Need to think about whether scaling make sense with quadrature
+                    daughter_val = inside[edge.child]
+                    edge_lik = self.lik.get_fixed(daughter_val, edge)
+                else:
+                    inside_values = inside[edge.child]
+                    if np.ndim(inside_values) == 0 or np.all(np.isnan(inside_values)):
+                        # Child appears fixed, or we have not visited it. Either our
+                        # edge order is wrong (bug) or we have hit a dangling node
+                        raise ValueError(
+                            "The input tree sequence includes "
+                            "dangling nodes: please simplify it"
+                        )
+                    # daughter_val = self.lik.scale_geometric(
+                    #    spanfrac, self.lik.make_lower_tri(inside[edge.child])
+                    # )
+                    # TODO: Need to think about whether scaling make sense with quadrature
+                    daughter_val = self.lik.make_lower_tri(inside[edge.child])
+                    daughter_val *= self.lik.inside_quadrature_weights
+                    edge_lik = self.lik.get_inside(daughter_val, edge)
+                val = self.lik.combine(val, edge_lik)
+                if cache_inside:
+                    g_i[edge.id] = edge_lik
+            denominator[parent] = (
+                np.max(val) if standardize else self.lik.identity_constant
+            )
+            inside[parent] = self.lik.ratio(val, denominator[parent])
+        if cache_inside:
+            self.g_i = self.lik.ratio(
+                g_i, denominator[self.ts.tables.edges.child, None]
+            )
+        # Keep the results in this object
+        self.inside = inside
+        self.denominator = denominator
+
+    # TODO eventually just wrap into original functions as an option
+    def outside_pass_integrated(
+        self,
+        *,
+        standardize=False,
+        ignore_oldest_root=False,
+        progress=None,
+    ):
+        """
+        Computes the full posterior distribution on nodes, using quadrature to
+        evaluate integrals over parent times, returning the posterior density at each
+        point in the time grid.
+
+        Standardizing *during* the outside process may be necessary if there is
+        overflow, but means that we cannot check the total functional value at each node
+
+        Ignoring the oldest root may also be necessary when the oldest root node
+        causes numerical stability issues.
+
+        The rows in the posterior returned correspond to node IDs as given by
+        self.nodes
+        """
+        if progress is None:
+            progress = self.progress
+        if not hasattr(self, "inside"):
+            raise RuntimeError("You have not yet run the inside algorithm")
+
+        outside = self.inside.clone_with_new_data(
+            grid_data=0, probability_space=base.LIN
+        )
+        for root, span_when_root in self.root_spans.items():
+            # outside[root] = span_when_root / self.spans[root]
+            # TODO: need to think about how scaling works with quadrature
+            outside[root] = self.lik.identity_constant
+        outside.force_probability_space(self.inside.probability_space)
+
+        # TODO need to make sure logsumexp does the right thing with weights
+        assert (
+            outside.probability_space == base.LIN
+        ), "Quadrature not implement for logspace"
+
+        for child, edges in tqdm(
+            self.edges_by_child_desc(),
+            desc="Outside",
+            total=len(np.unique(self.ts.tables.edges.child)),
+            disable=not progress,
+        ):
+            if child in self.fixednodes:
+                continue
+            val = np.full(self.lik.grid_size, self.lik.identity_constant)
+            for edge in edges:
+                if ignore_oldest_root:
+                    if edge.parent == self.ts.num_nodes - 1:
+                        continue
+                if edge.parent in self.fixednodes:
+                    raise RuntimeError(
+                        "Fixed nodes cannot currently be parents in the TS"
+                    )
+                # Geometric scaling works exactly for all nodes fixed in graph
+                # but is an approximation when times are unknown.
+                spanfrac = edge.span / self.spans[child]
+                try:
+                    inside_div_gi = self.lik.ratio(
+                        self.inside[edge.parent], self.g_i[edge.id], div_0_null=True
+                    )
+                except AttributeError:  # we haven't cached g_i so we recalculate
+                    # daughter_val = self.lik.scale_geometric(
+                    #    spanfrac, self.lik.make_lower_tri(self.inside[edge.child])
+                    # )
+                    # TODO: need to think about how scaling works with quadrature
+                    daughter_val = self.lik.make_lower_tri(self.inside[edge.child])
+                    daughter_val *= self.lik.inside_quadrature_weights
+                    edge_lik = self.lik.get_inside(daughter_val, edge)
+                    cur_g_i = self.lik.ratio(edge_lik, self.denominator[child])
+                    inside_div_gi = self.lik.ratio(
+                        self.inside[edge.parent], cur_g_i, div_0_null=True
+                    )
+                # parent_val = self.lik.scale_geometric(
+                #    spanfrac,
+                #    self.lik.make_upper_tri(
+                #        self.lik.combine(outside[edge.parent], inside_div_gi)
+                #    ),
+                # )
+                parent_val = self.lik.make_upper_tri(
+                    self.lik.combine(outside[edge.parent], inside_div_gi)
+                )
+                if standardize:
+                    parent_val = self.lik.ratio(parent_val, np.max(parent_val))
+                parent_val *= self.lik.outside_quadrature_weights
+                edge_lik = self.lik.get_outside(parent_val, edge)
+                val = self.lik.combine(val, edge_lik)
+
+            # vv[0] = 0  # Seems a hack: internal nodes should be allowed at time 0
+            assert self.denominator[edge.child] > self.lik.null_constant
+            outside[child] = self.lik.ratio(val, self.denominator[child])
+            if standardize:
+                outside[child] = self.lik.ratio(val, np.max(val))
+        self.outside = outside
+        posterior = outside.clone_with_new_data(
+            grid_data=self.lik.combine(self.inside.grid_data, outside.grid_data),
+            fixed_data=np.nan,
+        )  # We should never use the posterior for a fixed node
+        quadrature_weights = 0.5 * (
+            util.simpson_rule(posterior.timepoints, direction="forward")
+            + util.simpson_rule(posterior.timepoints, direction="backward")
+        )
+        for u in posterior.nonfixed_nodes:
+            norm = np.sum(posterior[u] * quadrature_weights)
+            posterior[u] /= norm
+        return posterior
+
 
 def posterior_mean_var(ts, posterior, *, fixed_node_set=None):
     """
@@ -885,6 +1104,52 @@ def posterior_mean_var(ts, posterior, *, fixed_node_set=None):
         times = posterior.timepoints
         mn_post[u] = np.sum(probs * times) / np.sum(probs)
         vr_post[u] = np.sum(((mn_post[u] - (times)) ** 2) * (probs / np.sum(probs)))
+        metadata_array[u] = json.dumps({"mn": mn_post[u], "vr": vr_post[u]}).encode()
+    md, md_offset = tskit.pack_bytes(metadata_array)
+    tables.nodes.set_columns(
+        flags=tables.nodes.flags,
+        time=tables.nodes.time,
+        population=tables.nodes.population,
+        individual=tables.nodes.individual,
+        metadata=md,
+        metadata_offset=md_offset,
+    )
+    ts = tables.tree_sequence()
+    return ts, mn_post, vr_post
+
+
+# TODO: combine with function above
+def posterior_mean_var_integrated(ts, posterior, *, fixed_node_set=None):
+    """
+    Mean and variance of node age. Fixed nodes will be given a mean
+    of their exact time in the tree sequence, and zero variance (as long as they are
+    identified by the fixed_node_set).
+    If fixed_node_set is None, we attempt to date all the non-sample nodes
+    Also assigns the estimated mean and variance of the age of each node
+    as metadata in the tree sequence.
+    """
+    mn_post = np.full(ts.num_nodes, np.nan)  # Fill with NaNs so we detect when there's
+    vr_post = np.full(ts.num_nodes, np.nan)  # been an error
+    tables = ts.dump_tables()
+
+    if fixed_node_set is None:
+        fixed_node_set = ts.samples()
+    fixed_nodes = np.array(list(fixed_node_set))
+    mn_post[fixed_nodes] = tables.nodes.time[fixed_nodes]
+    vr_post[fixed_nodes] = 0
+
+    metadata_array = tskit.unpack_bytes(
+        ts.tables.nodes.metadata, ts.tables.nodes.metadata_offset
+    )
+    quadrature_weights = 0.5 * (
+        util.simpson_rule(posterior.timepoints, direction="forward")
+        + util.simpson_rule(posterior.timepoints, direction="backward")
+    )
+    for u in posterior.nonfixed_nodes:
+        probs = posterior[u]
+        times = posterior.timepoints
+        mn_post[u] = np.sum(quadrature_weights * probs * times)
+        vr_post[u] = np.sum(quadrature_weights * probs * times**2) - mn_post[u] ** 2
         metadata_array[u] = json.dumps({"mn": mn_post[u], "vr": vr_post[u]}).encode()
     md, md_offset = tskit.pack_bytes(metadata_array)
     tables.nodes.set_columns(
@@ -1063,6 +1328,7 @@ def get_dates(
     progress=False,
     cache_inside=False,
     probability_space=base.LOG,
+    integrate=False,
 ):
     """
     Infer dates for the nodes in a tree sequence, returning an array of inferred dates
@@ -1133,21 +1399,34 @@ def get_dates(
         liklhd.precalculate_mutation_likelihoods(num_threads=num_threads)
 
     dynamic_prog = InOutAlgorithms(priors, liklhd, progress=progress)
-    dynamic_prog.inside_pass(cache_inside=False)
+    if integrate:
+        dynamic_prog.inside_pass_integrated(cache_inside=False)
+    else:
+        dynamic_prog.inside_pass(cache_inside=False)
 
     posterior = None
     if method == "inside_outside":
-        posterior = dynamic_prog.outside_pass(
-            standardize=outside_standardize, ignore_oldest_root=ignore_oldest_root
-        )
-        # Turn the posterior into probabilities
-        posterior.standardize()  # Just to make sure there are no floating point issues
-        posterior.force_probability_space(base.LIN)
-        posterior.to_probabilities()
-        tree_sequence, mn_post, _ = posterior_mean_var(
-            tree_sequence, posterior, fixed_node_set=fixed_nodes
-        )
+        if integrate:
+            posterior = dynamic_prog.outside_pass_integrated(
+                standardize=outside_standardize, ignore_oldest_root=ignore_oldest_root
+            )
+            tree_sequence, mn_post, _ = posterior_mean_var_integrated(
+                tree_sequence, posterior, fixed_node_set=fixed_nodes
+            )
+        else:
+            posterior = dynamic_prog.outside_pass(
+                standardize=outside_standardize, ignore_oldest_root=ignore_oldest_root
+            )
+            # Turn the posterior into probabilities
+            posterior.standardize()  # Just to make sure there are no floating point issues
+            posterior.force_probability_space(base.LIN)
+            posterior.to_probabilities()
+            tree_sequence, mn_post, _ = posterior_mean_var(
+                tree_sequence, posterior, fixed_node_set=fixed_nodes
+            )
     elif method == "maximization":
+        if integrate:
+            raise ValueError("Outside maximization does not support integration")
         if mutation_rate is not None:
             mn_post = dynamic_prog.outside_maximization(eps=eps)
         else:

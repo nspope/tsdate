@@ -351,70 +351,16 @@ def simpson_rule(timepoints, k=None, direction="forward"):
                 w[2 * i + 2] += a * (2 - h[2 * i] / h[2 * i + 1])
         if direction == "backward":
             w = np.flip(w)
+    # assert np.all(w >= 0), "Quadrature rule is unstable, subdivide intervals"
     return w
 
 
-## Symmetrized version
-#def simpson_rule(timepoints, k=None, direction="forward"):
-#    """
-#    Calculate the k-th forward or backward quadrature rule for the set of time
-#    intervals defined by `timepoints`. Returns a set of quadrature weights for
-#    the k subintervals starting from the first (if direction is `forward`) or last
-#    (if direction is `backward`) timepoint.
-#
-#    If the number of subintervals is even then Simpson's 1/3 rule is used. If
-#    the number of subintervals is odd, then the trapezoidal rule is used for
-#    the last subinterval.
-#
-#    :param numpy.ndarray timepoints: A 1D array of timepoints in increasing order
-#    :param int k: The number of subintervals to include in the rule
-#    :param str direction: Include subintervals starting from the first (`forward`)
-#        or last (`backward`) timepoint.
-#
-#    :return: An array of quadrature weights
-#    :rtype: numpy.ndarray
-#    """
-#    assert sorted(timepoints), "Timepoints must be in increasing order"
-#    if k is not None:
-#        assert (
-#            isinstance(k, int) and 0 <= k < timepoints.size
-#        ), "Order must be positive and less than grid size"
-#    else:
-#        k = timepoints.size - 1
-#
-#    w = np.zeros(timepoints.size)
-#    if k > 0:
-#        if direction == "forward":
-#            h = np.diff(timepoints)
-#        elif direction == "backward":
-#            h = -np.diff(timepoints[::-1])
-#        else:
-#            raise ValueError("Direction must be one of 'forward' or 'backward'")
-#        if k == 1:
-#            w[0] += h[0] / 2
-#            w[1] += h[0] / 2
-#        if k > 1:
-#            for i in range(0, k // 2):
-#                a = (h[2 * i] + h[2 * i + 1]) / 6
-#                w[2 * i] += a * (2 - h[2 * i + 1] / h[2 * i])
-#                w[2 * i + 1] += (
-#                    a * (h[2 * i] + h[2 * i + 1]) ** 2 / (h[2 * i] * h[2 * i + 1])
-#                )
-#                w[2 * i + 2] += a * (2 - h[2 * i] / h[2 * i + 1])
-#            if k % 2:
-#                for i in range(0, k // 2):
-#                    j = 2*i + 1
-#                    a = (h[j] + h[j + 1]) / 6
-#                    w[j] += a * (2 - h[j + 1] / h[j])
-#                    w[j + 1] += (
-#                        a * (h[j] + h[j + 1]) ** 2 / (h[j] * h[j + 1])
-#                    )
-#                    w[j + 2] += a * (2 - h[j] / h[j + 1])
-#                w[0] += h[0] / 2
-#                w[1] += h[0] / 2
-#                w[k] += h[k - 1] / 2
-#                w[k - 1] += h[k - 1] / 2
-#                w *= 0.5
-#        if direction == "backward":
-#            w = np.flip(w)
-#    return w
+def make_log_piecewise_grid(base_min, base_max, n):
+    """
+    Make a time grid with uniform spacing within intervals,
+    with regular boundaries in log10 space
+    """
+    grid = []
+    for i in range(base_min, base_max):
+        grid.extend(np.linspace(10**i, 10 ** (i + 1), n))
+    return np.sort(np.unique(grid))

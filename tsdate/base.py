@@ -27,6 +27,8 @@ import logging
 
 import numpy as np
 
+from . import util
+
 
 FLOAT_DTYPE = np.float64
 LIN = "linear"
@@ -143,17 +145,26 @@ class NodeGridValues:
         else:
             raise RuntimeError("Probability space is not", LIN, "or", LOG)
 
-    def to_probabilities(self):
+    def to_probabilities(self, integrate=False):
         """
         Change grid data into probabilities (i.e. each row sums to one in linear or zero
-        in logarithmic space)
+        in logarithmic space), or into a probability density (if integrate=True)
         """
         if self.probability_space != LIN:
             raise NotImplementedError(
                 "Can only convert to probabilities in linear space"
             )
-        assert not np.any(self.grid_data < 0)
-        self.grid_data = self.grid_data / self.grid_data.sum(axis=1)[:, np.newaxis]
+        if integrate:
+            # use quadrature to get probability density
+            weights = util.simpson_rule(self.timepoints, direction="forward")
+            for i, probs in enumerate(self.grid_data):
+                self.grid_data[i] /= np.sum(probs * weights)
+            # TODO: negative but low magnitude "grid_data" can occur if these were
+            # generated via a recycled quadrature rule -- should probably just
+            # truncate these to 0
+        else:
+            assert not np.any(self.grid_data < 0)
+            self.grid_data = self.grid_data / self.grid_data.sum(axis=1)[:, np.newaxis]
 
     def __getitem__(self, node_id):
         index = self.row_lookup[node_id]

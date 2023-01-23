@@ -947,7 +947,9 @@ def create_timepoints(base_priors, n_points=21):
     return np.insert(t_set, 0, 0)
 
 
-def fill_priors(node_parameters, timepoints, ts, Ne, *, prior_distr, progress=False, point_prior=False):
+def fill_priors(
+    node_parameters, timepoints, ts, Ne, *, prior_distr, progress=False, integrate=False
+):
     """
     Take the alpha and beta values from the node_parameters array, which contains
     one row for each node in the TS (including fixed nodes)
@@ -982,14 +984,19 @@ def fill_priors(node_parameters, timepoints, ts, Ne, *, prior_distr, progress=Fa
     for node in tqdm(
         datable_nodes, desc="Assign Prior to Each Node", disable=not progress
     ):
-        if point_prior:
+        if integrate:
+            # quadrature needs point evaluations of prior density
             with np.errstate(divide="ignore", invalid="ignore"):
-                prior_node = pdf_func(timepoints, main_param[node], scale=scale_param[node])
+                prior_node = pdf_func(
+                    timepoints, main_param[node], scale=scale_param[node]
+                )
             prior_node = np.divide(prior_node, np.max(prior_node))
             prior_times[node] = prior_node
         else:
             with np.errstate(divide="ignore", invalid="ignore"):
-                prior_node = cdf_func(timepoints, main_param[node], scale=scale_param[node])
+                prior_node = cdf_func(
+                    timepoints, main_param[node], scale=scale_param[node]
+                )
             # force age to be less than max value
             prior_node = np.divide(prior_node, np.max(prior_node))
             # prior in each epoch
@@ -1011,7 +1018,7 @@ def build_grid(
     # Parameters below undocumented
     progress=False,
     allow_unary=False,
-    point_prior=False,
+    integrate=False,
 ):
     """
     Using the conditional coalescent, calculate the prior distribution for the age of
@@ -1100,6 +1107,6 @@ def build_grid(
         Ne,
         prior_distr=prior_distribution,
         progress=progress,
-        point_prior=point_prior,
+        integrate=integrate,
     )
     return priors

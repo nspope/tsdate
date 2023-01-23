@@ -741,21 +741,27 @@ class TestLikelihoodClass:
                 assert lik.mut_edges[e.id] == exp_branch_muts
                 cumul_pois_fwd = []
                 for k in range(grid.size):
-                    pois_lambda = (grid[k] - grid[:k+1]) * mut_rate * exp_span
-                    pois_pmf = self.poisson(pois_lambda, exp_branch_muts, standardize=False)
+                    pois_lambda = (grid[k] - grid[: k + 1]) * mut_rate * exp_span
+                    pois_pmf = self.poisson(
+                        pois_lambda, exp_branch_muts, standardize=False
+                    )
                     cumul_pois_fwd.append(
-                        scipy.integrate.simpson(pois_pmf, grid[:k+1], even='first')
+                        scipy.integrate.simpson(pois_pmf, grid[: k + 1], even="first")
                     )
                 lower_tri = lik.get_mut_lik_lower_tri(e) * lik.inside_quadrature_weights
                 assert np.allclose(lik.rowsum_lower_tri(lower_tri), cumul_pois_fwd)
                 cumul_pois_bwd = []
                 for k in range(grid.size):
                     pois_lambda = (grid[k:] - grid[k]) * mut_rate * exp_span
-                    pois_pmf = self.poisson(pois_lambda, exp_branch_muts, standardize=False)
-                    cumul_pois_bwd.append(
-                        scipy.integrate.simpson(pois_pmf, grid[k:], even='last')
+                    pois_pmf = self.poisson(
+                        pois_lambda, exp_branch_muts, standardize=False
                     )
-                upper_tri = lik.get_mut_lik_upper_tri(e) * lik.outside_quadrature_weights
+                    cumul_pois_bwd.append(
+                        scipy.integrate.simpson(pois_pmf, grid[k:], even="last")
+                    )
+                upper_tri = (
+                    lik.get_mut_lik_upper_tri(e) * lik.outside_quadrature_weights
+                )
                 assert np.allclose(lik.rowsum_upper_tri(upper_tri), cumul_pois_bwd)
 
     def test_no_theta_class_loglikelihood(self):
@@ -772,11 +778,35 @@ class TestLikelihoodClass:
             r += np.exp(x)
         return np.log(r)
 
+    @staticmethod
+    def naive_weighted_logsumexp(X, W):
+        r = 0
+        for x, w in zip(X, W):
+            r += w * np.exp(x)
+        return np.log(r)
+
     def test_logsumexp(self):
         lls = np.array([0.1, 0.2, 0.5])
         ll_sum = np.sum(lls)
         log_lls = np.log(lls)
         assert np.allclose(LogLikelihoods.logsumexp(log_lls), np.log(ll_sum))
+
+    def test_weighted_logsumexp(self):
+        lls = np.array([0.1, 0.2, 0.5])
+        weights = np.array([-0.1, -0.1, 0.3])
+        ll_sum = np.sum(lls * weights)
+        log_lls = np.log(lls)
+        ll_sum_f, _ = LogLikelihoods.weighted_logsumexp(log_lls, weights)
+        assert np.allclose(ll_sum_f, np.log(ll_sum))
+
+    def test_weighted_logsumexp_negative(self):
+        lls = np.array([0.1, 0.2, 0.5])
+        weights = np.array([0.1, 0.1, -0.3])
+        ll_sum = np.sum(lls * weights)
+        log_lls = np.log(lls)
+        ll_sum_f, ll_sign = LogLikelihoods.weighted_logsumexp(log_lls, weights)
+        assert np.sign(ll_sum) == ll_sign
+        assert np.allclose(ll_sum_f, np.log(np.abs(ll_sum)))
 
     def test_zeros_logsumexp(self):
         with np.errstate(divide="ignore"):
@@ -2020,7 +2050,7 @@ class TestQuadratureRules:
             return np.where(t > tmin, scipy.stats.poisson.pmf(8, t - tmin), 0.0)
 
         timepoints = np.array([0, 3, 8, 12, 20, 25, 31])
-        for k in range(1, timepoints.size+1):
+        for k in range(1, timepoints.size + 1):
             fx = test_func(timepoints, timepoints[-k])
             fy = scipy.integrate.simpson(fx[-k:], timepoints[-k:], even="last")
             weights = simpson_rule(timepoints, k - 1, "backward")

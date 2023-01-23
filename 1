@@ -127,12 +127,8 @@ class Likelihoods:
         self.inside_quadrature_weights = None
         self.outside_quadrature_weights = None
         if integrate:
-            self.inside_quadrature_weights = self.make_inside_quadrature(
-                self.timepoints
-            )
-            self.outside_quadrature_weights = self.make_outside_quadrature(
-                self.timepoints
-            )
+            self.inside_quadrature_weights = self.make_inside_quadrature(self.timepoints)
+            self.outside_quadrature_weights = self.make_outside_quadrature(self.timepoints)
 
     @staticmethod
     def make_inside_quadrature(grid):
@@ -429,7 +425,11 @@ class Likelihoods:
         return arr * liks
 
     def scale_geometric(self, fraction, value):
-        return value**fraction
+        if self.inside_quadrature_weights is not None:
+            # hack to still work with unstable quadrature rule
+            return value
+        else:
+            return value**fraction
 
 
 class LogLikelihoods(Likelihoods):
@@ -514,23 +514,19 @@ class LogLikelihoods(Likelihoods):
                 i_start = i
             res.append(self.logsumexp(input_array[i:]))
         else:
-            # TODO: truncating negative values-- these are typically very small
-            # but that should be confirmed
+            # TODO: truncating negative values; clean this up
             i_start = self.row_indices[0][0]
             for i in self.row_indices[0][1:]:
-                x, sign = self.weighted_logsumexp(
-                    input_array[i_start:i], weights[i_start:i]
-                )
+                x, sign = self.weighted_logsumexp(input_array[i_start:i], weights)
                 if sign < 0:
                     res.append(-np.Inf)
-                    # assert False, "Negative integrand"
                 else:
                     res.append(x)
                 i_start = i
-            x, sign = self.weighted_logsumexp(input_array[i:], weights[i:])
+            x, sign = self.weighted_logsumexp(input_array[i:], weights)
             if sign < 0:
                 res.append(-np.Inf)
-                # assert False, "Negative integrand"
+                assert False, "Negative integrand"
             else:
                 res.append(x)
         return np.array(res)
@@ -549,23 +545,19 @@ class LogLikelihoods(Likelihoods):
                 i_start = i
             res.append(self.logsumexp(input_array[i:]))
         else:
-            # TODO: truncating negative values-- these are typically very small
-            # but that should be confirmed
+            # TODO: truncating negative values; clean this up
             i_start = self.col_indices[0]
             for i in self.col_indices[1:]:
-                x, sign = self.weighted_logsumexp(
-                    input_array[i_start:i], weights[i_start:i]
-                )
+                x, sign = self.weighted_logsumexp(input_array[i_start:i], weights)
                 if sign < 0:
                     res.append(-np.Inf)
-                    # assert False, "Negative integrand"
                 else:
                     res.append(x)
                 i_start = i
-            x, sign = self.weighted_logsumexp(input_array[i:], weights[i_start:i])
+            x, sign = self.weighted_logsumexp(input_array[i:], weights)
             if sign < 0:
                 res.append(-np.Inf)
-                # assert False, "Negative integrand"
+                assert False, "Negative integrand"
             else:
                 res.append(x)
         return np.array(res)
@@ -619,7 +611,10 @@ class LogLikelihoods(Likelihoods):
         return arr + log_liks
 
     def scale_geometric(self, fraction, value):
-        return fraction * value
+        if self.inside_quadrature_weights is not None:
+            return value
+        else:
+            return fraction * value
 
 
 class InOutAlgorithms:
@@ -988,9 +983,7 @@ def posterior_mean_var(ts, posterior, *, fixed_node_set=None, integrate=False):
             norm = np.sum(weights * probs)
             mn_post[u] = np.sum(weights * probs * times) / norm
             vr_post[u] = np.sum(weights * probs * times**2) / norm - mn_post[u] ** 2
-            metadata_array[u] = json.dumps(
-                {"mn": mn_post[u], "vr": vr_post[u]}
-            ).encode()
+            metadata_array[u] = json.dumps({"mn": mn_post[u], "vr": vr_post[u]}).encode()
         # TODO: negative but low magnitude "grid_data" can occur if these were
         # generated via a recycled quadrature rule -- should probably just
         # truncate these to 0
@@ -1000,9 +993,7 @@ def posterior_mean_var(ts, posterior, *, fixed_node_set=None, integrate=False):
             times = posterior.timepoints
             mn_post[u] = np.sum(probs * times) / np.sum(probs)
             vr_post[u] = np.sum(((mn_post[u] - (times)) ** 2) * (probs / np.sum(probs)))
-            metadata_array[u] = json.dumps(
-                {"mn": mn_post[u], "vr": vr_post[u]}
-            ).encode()
+            metadata_array[u] = json.dumps({"mn": mn_post[u], "vr": vr_post[u]}).encode()
     md, md_offset = tskit.pack_bytes(metadata_array)
     tables.nodes.set_columns(
         flags=tables.nodes.flags,
@@ -1181,8 +1172,7 @@ def get_dates(
     cache_inside=False,
     probability_space=base.LOG,
     integrate=False,
-    timepoints=21,  # DEBUG
-    prior_distr="lognorm",
+    timepoints=21, #DEBUG
 ):
     """
     Infer dates for the nodes in a tree sequence, returning an array of inferred dates
@@ -1219,8 +1209,8 @@ def get_dates(
             progress=progress,
             approximate_priors=approx_priors,
             integrate=integrate,
-            timepoints=timepoints,  # DEBUG
-            prior_distribution=prior_distr,  # DEBUG
+            timepoints=timepoints, #DEBUG
+            prior_distribution="lognorm", #DEBUG
         )
     else:
         logging.info("Using user-specified priors")
@@ -1237,7 +1227,7 @@ def get_dates(
             priors.timepoints,
             mutation_rate,
             recombination_rate,
-            eps=eps,  # 0.0 if integrate else eps,
+            eps=0.0 if integrate else eps,
             fixed_node_set=fixed_nodes,
             progress=progress,
             integrate=integrate,
@@ -1248,10 +1238,10 @@ def get_dates(
             priors.timepoints,
             mutation_rate,
             recombination_rate,
-            eps=eps,  # 0.0 if integrate else eps,
+            eps=eps,
             fixed_node_set=fixed_nodes,
             progress=progress,
-            integrate=integrate,  # TODO: not working w/ unstable quad rule
+            integrate=integrate, #TODO: not working w/ unstable quad rule
         )
 
     if mutation_rate is not None:
@@ -1266,6 +1256,11 @@ def get_dates(
             standardize=outside_standardize, ignore_oldest_root=ignore_oldest_root
         )
         # Turn the posterior into probabilities
+        if posterior.probability_space == base.LIN:
+            print(posterior[10])
+        else:
+            print(np.exp(posterior[10]))
+
         posterior.standardize()  # Just to make sure there are no floating point issues
         posterior.force_probability_space(base.LIN)
         posterior.to_probabilities(integrate=integrate)
@@ -1291,7 +1286,7 @@ def get_dates(
         priors.timepoints,
         eps,
         priors.nonfixed_nodes,
-        dynamic_prog.inside,  # DEBUG
-        priors,  # DEBUG
-        dynamic_prog.outside,  # DEBUG
+        dynamic_prog.inside, #DEBUG
+        dynamic_prog.outside, #DEBUG
+        priors, #DEBUG
     )

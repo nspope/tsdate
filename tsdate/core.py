@@ -1272,6 +1272,21 @@ def get_dates(
         tree_sequence, mn_post, _ = posterior_mean_var(
             tree_sequence, posterior, fixed_node_set=fixed_nodes, integrate=integrate
         )
+    elif method == "inside":  # DEBUG
+        posterior = dynamic_prog.outside_pass(
+            standardize=outside_standardize, ignore_oldest_root=ignore_oldest_root
+        )
+        posterior = dynamic_prog.inside.clone_with_new_data(
+            grid_data=dynamic_prog.inside.grid_data,
+            fixed_data=np.nan,
+        )  # We should never use the posterior for a fixed node
+        # Turn the posterior into probabilities
+        posterior.standardize()  # Just to make sure there are no floating point issues
+        posterior.force_probability_space(base.LIN)
+        posterior.to_probabilities(integrate=integrate)
+        tree_sequence, mn_post, _ = posterior_mean_var(
+            tree_sequence, posterior, fixed_node_set=fixed_nodes, integrate=integrate
+        )
     elif method == "maximization":
         if integrate:
             raise ValueError("Outside maximization does not support integration")

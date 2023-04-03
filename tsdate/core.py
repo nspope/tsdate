@@ -365,28 +365,34 @@ class Likelihoods:
         #     np.power(prev_state, self.n_breaks(edge)) *
         #     np.exp(-(prev_state * self.rec_rate * edge.span * 2)))
 
-    def get_inside(self, arr, edge):
+    def get_inside(self, arr, edge, scale=None):
         liks = self.identity_constant
         if self.rec_rate is not None:
             liks = self._recombination_lik(edge)
         if self.mut_rate is not None:
             liks *= self.get_mut_lik_lower_tri(edge)
+        if scale is not None:
+            liks = self.scale_geometric(scale, liks)
         return self.rowsum_lower_tri(arr * liks)
 
-    def get_outside(self, arr, edge):
+    def get_outside(self, arr, edge, scale=None):
         liks = self.identity_constant
         if self.rec_rate is not None:
             liks = self._recombination_lik(edge)
         if self.mut_rate is not None:
             liks *= self.get_mut_lik_upper_tri(edge)
+        if scale is not None:
+            liks = self.scale_geometric(scale, liks)
         return self.rowsum_upper_tri(arr * liks)
 
-    def get_fixed(self, arr, edge):
+    def get_fixed(self, arr, edge, scale=None):
         liks = self.identity_constant
         if self.rec_rate is not None:
             liks = self._recombination_lik(edge, fixed=True)
         if self.mut_rate is not None:
             liks *= self.get_mut_lik_fixed_node(edge)
+        if scale is not None:
+            liks = self.scale_geometric(scale, liks)
         return arr * liks
 
     def scale_geometric(self, fraction, value):
@@ -495,28 +501,34 @@ class LogLikelihoods(Likelihoods):
             ret[np.isnan(ret)] = self.null_constant
         return ret
 
-    def get_inside(self, arr, edge):
+    def get_inside(self, arr, edge, scale=None):
         log_liks = self.identity_constant
         if self.rec_rate is not None:
             log_liks = self._recombination_loglik(edge)
         if self.mut_rate is not None:
             log_liks += self.get_mut_lik_lower_tri(edge)
+        if scale is not None:
+            log_liks = self.scale_geometric(scale, log_liks)
         return self.rowsum_lower_tri(arr + log_liks)
 
-    def get_outside(self, arr, edge):
+    def get_outside(self, arr, edge, scale=None):
         log_liks = self.identity_constant
         if self.rec_rate is not None:
             log_liks = self._recombination_loglik(edge)
         if self.mut_rate is not None:
             log_liks += self.get_mut_lik_upper_tri(edge)
+        if scale is not None:
+            log_liks = self.scale_geometric(scale, log_liks)
         return self.rowsum_upper_tri(arr + log_liks)
 
-    def get_fixed(self, arr, edge):
+    def get_fixed(self, arr, edge, scale=None):
         log_liks = self.identity_constant
         if self.rec_rate is not None:
             log_liks = self._recombination_loglik(edge, fixed=True)
         if self.mut_rate is not None:
             log_liks += self.get_mut_lik_fixed_node(edge)
+        if scale is not None:
+            log_liks = self.scale_geometric(scale, log_liks)
         return arr + log_liks
 
     def scale_geometric(self, fraction, value):
@@ -858,6 +870,202 @@ class InOutAlgorithms:
         return self.lik.timepoints[np.array(maximized_node_times).astype("int")]
 
 
+class TRWSAlgorithms(InOutAlgorithms):
+    """
+    Implementation of the sequential tree reweighted message passing algorithm.
+
+    See Kolmogorov [2005] "..." for the original, max-product formulation.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        # Messages passed from factors in the direction of roots
+        self.inside_message = np.full(
+            (self.ts.num_edges, self.lik.grid_size),
+            self.lik.identity_constant,
+        )
+
+        # Messages passed from factors in the direction of leaves
+        self.outside_message = np.full(
+            (self.ts.num_edges, self.lik.grid_size),
+            self.lik.identity_constant,
+        )
+
+        # the approximate posterior marginals
+        self.belief = self.prior.clone_with_new_data(
+            grid_data=self.lik.identity_constant,
+            fixed_data=np.nan,
+        )
+
+    def inside_pass(self, *, standardize=False, progress=None):
+        """
+        Use dynamic programming to pass span-weighted messages in the direction of the roots.
+        """
+        if progress is None:
+            progress = self.progress
+
+        denominator = np.full(self.ts.num_nodes, np.nan)
+        visited = np.full(self.ts.num_nodes, True)
+
+        # Iterate through the nodes via groupby on parent node
+        for parent, edges in tqdm(
+            self.edges_by_parent_asc(),
+            desc="Inside TRW-S",
+            total=inside.num_nonfixed,
+            disable=not progress,
+        ):
+            """
+            for each node, find the conditional prob of age at every time
+            in time grid
+            """
+            if parent in self.fixednodes:
+                continue  # there is no hidden state for this parent - it's fixed
+
+            # Some background:
+            #   - It is well known that BP is globally convergent in the case where the graph is a tree.
+            #     Minimizes free energy ... Bethe ...
+            #     e.g. it produces the exact marginals / calculates the free energy exactly.
+            #     When the graph has loops, all bets are off -- it is not guarenteed to converge,
+            #     and the marginals / free energy are not exact. 
+
+            #   - Wainwright [2003] introduced a generalization of ... 
+            #   Note
+            #   that they define the algo for spanning trees, but later this
+            #   assumption was shown to not be necessary: any collection of
+            #   trees that cover the graph will work; like the marginal trees
+            #   in a tree sequence. These algorithms often produce better
+            #   marginals, and the free eenrgy but just like loopy BP they aren't globally
+            #   convergent.  Moreover, there is the bigger problem of choosing
+            #   the probability distribution over trees.  However, in our case,
+            #   this is known: the probablility distribution over trees is the
+            #   relative span of each tree in the tree sequence.
+             
+            #   - Kolmogrov [2005] proved that (for the tree-reweighted max-product algorithm) 
+            #     a particular update order rendered the algorithm globally
+            #     convergent. Specifically, if the updates are done
+            #     tree-by-tree. This is very inefficient; but, he 
+            #     showed that one construct an efficient algorithm (same complexity as BP) if the graph
+            #     can be decomposed into chains, such that each tree is a union
+            #     of chains. This is exactly the case for tree sequences: the paths from leaves to roots
+            #     are the chains.
+            #
+            #   - Meltzer [2009] extended this to to the sum-product algorithm (e.g. what we're doing).
+            #
+            #   - The free energy being minimized is exactly ... This is
+            #     important for us, as at makes an explicit connection between
+            #     the "likelihood" at the level of the ARG and that at the level
+            #     of the local trees.
+
+            # The belief (posterior marginal) for for a node is defined as:
+            #   prior(node) \prod_{neighbours} message_from_factor(neighbour, node)**weight(neighbour, node)
+            val = self.priors[parent].copy()
+
+            for edge in edges:
+                spanfrac = edge.span / self.ts.sequence_length
+
+                # The message from factor(child, parent) to parent
+                #   \int factor(child, parent; x)**(1/weight(parent, child)) message_from_child(x) dx
+                if edge.child in self.fixednodes:
+                    child_message = self.lik.identity_constant
+                    factor_message = self.lik.get_fixed(
+                        child_message, edge, scale=1./spanfrac
+                    )
+                else:
+                    if not visited[child]:
+                        raise ValueError(
+                            "The input tree sequence includes dangling nodes: please simplify it"
+                        )
+                    # The message from variable(child) to factor(child, parent): 
+                    #   prior(child) \times 
+                    #       message_from_factor(parent, child)**(weight(parent, child) - 1) \times
+                    #       \prod_{nodes except parent} message_from_factor(node, child)**(weight(node, child))
+                    #   = belief(child) \times message_from_factor(parent, child)**(-1)
+                    child_message = self.lik.ratio( 
+                        self.belief[edge.child], self.outside_message[edge.id]
+                    )
+                    factor_message = self.lik.get_inside(
+                        self.lik.make_lower_tri(child_message), edge, scale=1./spanfrac
+                    )
+                val = self.lik.combine(
+                    val, self.lik.scale_geometric(spanfrac, factor_message)
+                )
+                self.inside_message[edge.id] = factor_message # store unscaled
+
+            # Update beliefs at parent:
+            #   prior(parent) \prod_{...} message_from_factor(...)**weight(neighbour, parent)
+            standardize = False #DEBUG
+            denominator[parent] = (
+                np.max(val) if standardize else self.lik.identity_constant
+            )
+            self.belief[parent] = self.lik.ratio(val, denominator[parent])
+            visited[parent] = True
+
+        #self.inside_message = self.lik.ratio(
+        #    self.inside_message, denominator[self.ts.tables.edges.child, None]
+        #) # TODO: um not sure?
+        self.denominator = denominator
+
+    def outside_pass(
+        self,
+        *,
+        standardize=False,
+        progress=None,
+    ):
+        """
+        Computes the full posterior distribution on nodes, returning the
+        posterior values. These are *not* probabilities, as they do not sum to one:
+        to convert to probabilities, call posterior.to_probabilities()
+
+        Standardizing *during* the outside process may be necessary if there is
+        overflow, but means that we cannot  check the total functional value at each node
+
+        Ignoring the oldest root may also be necessary when the oldest root node
+        causes numerical stability issues.
+
+        The rows in the posterior returned correspond to node IDs as given by
+        self.nodes
+        """
+        if progress is None:
+            progress = self.progress
+
+        visited = np.full(ts.num_nodes, False)
+
+        for child, edges in tqdm(
+            self.edges_by_child_desc(),
+            desc="Outside TRW-S",
+            total=len(np.unique(self.ts.tables.edges.child)),
+            disable=not progress,
+        ):
+            if child in self.fixednodes:
+                continue
+            val = np.full(self.lik.grid_size, self.lik.identity_constant)
+            for edge in edges:
+                if edge.parent in self.fixednodes:
+                    raise RuntimeError(
+                        "Fixed nodes cannot currently be parents in the TS"
+                    )
+                assert visited[edge.parent], "Edge order incorrect (bug)"
+                spanfrac = edge.span / self.ts.sequence_length
+
+                parent_message = self.lik.ratio( 
+                    self.belief[edge.parent], self.inside_message[edge.id]
+                )
+                factor_message = self.lik.get_outside(
+                    self.lik.make_upper_tri(parent_message), edge, scale=1./spanfrac
+                )
+                val = self.lik.combine(
+                    val, self.lik.scale_geometric(spanfrac, factor_message)
+                )
+                self.outside_message[edge.id] = factor_message # store unscaled
+
+            #assert self.denominator[edge.child] > self.lik.null_constant
+            #outside[child] = self.lik.ratio(val, self.denominator[child])
+            #if standardize:
+            #    outside[child] = self.lik.ratio(val, np.max(val))
+        return self.belief
+
+
 def posterior_mean_var(ts, posterior, *, fixed_node_set=None):
     """
     Mean and variance of node age. Fixed nodes will be given a mean
@@ -1147,7 +1355,11 @@ def get_dates(
     if mutation_rate is not None:
         liklhd.precalculate_mutation_likelihoods(num_threads=num_threads)
 
-    dynamic_prog = InOutAlgorithms(priors, liklhd, progress=progress)
+    if method == "TRWS":
+        dynamic_prog = TRWSAlgorithms(priors, liklhd, progress=progress)
+    else:
+        dynamic_prog = InOutAlgorithms(priors, liklhd, progress=progress)
+
     dynamic_prog.inside_pass(cache_inside=False)
 
     posterior = None

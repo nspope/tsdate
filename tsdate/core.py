@@ -878,7 +878,7 @@ class TRWSAlgorithms(InOutAlgorithms):
     See Kolmogorov [2005] "..." for the original, max-product formulation.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, belief=None, **kwargs):
         super().__init__(*args, **kwargs)
 
         # Messages passed from factors in the direction of roots
@@ -894,10 +894,16 @@ class TRWSAlgorithms(InOutAlgorithms):
         )
 
         # the approximate posterior marginals
-        self.belief = self.priors.clone_with_new_data(
-            grid_data=self.priors.grid_data.copy(),
-            fixed_data=np.nan,
-        )
+        if belief is None:
+            self.belief = self.priors.clone_with_new_data(
+                grid_data=self.priors.grid_data.copy(),
+                fixed_data=np.nan,
+            )
+        else:
+            self.belief = self.priors.clone_with_new_data(
+                grid_data=belief.grid_data.copy(),
+                fixed_data=np.nan,
+            )
 
     def _message_to_factor(self, node_id, edge_id):
         """
@@ -968,41 +974,6 @@ class TRWSAlgorithms(InOutAlgorithms):
             """
             if parent in self.fixednodes:
                 continue  # there is no hidden state for this parent - it's fixed
-
-            # Some background:
-            #   - It is well known that BP is globally convergent in the case where the graph is a tree.
-            #     Minimizes free energy ... Bethe ...
-            #     e.g. it produces the exact marginals / calculates the free energy exactly.
-            #     When the graph has loops, all bets are off -- it is not guarenteed to converge,
-            #     and the marginals / free energy are not exact.
-
-            #   - Wainwright [2003] introduced a generalization of ...
-            #   Note
-            #   that they define the algo for spanning trees, but later this
-            #   assumption was shown to not be necessary: any collection of
-            #   trees that cover the graph will work; like the marginal trees
-            #   in a tree sequence. These algorithms often produce better
-            #   marginals, and the free eenrgy but just like loopy BP they aren't globally
-            #   convergent.  Moreover, there is the bigger problem of choosing
-            #   the probability distribution over trees.  However, in our case,
-            #   this is known: the probablility distribution over trees is the
-            #   relative span of each tree in the tree sequence.
-
-            #   - Kolmogrov [2005] proved that (for the tree-reweighted max-product algorithm)
-            #     a particular update order rendered the algorithm globally
-            #     convergent. Specifically, if the updates are done
-            #     tree-by-tree. This is very inefficient; but, he
-            #     showed that one construct an efficient algorithm (same complexity as BP) if the graph
-            #     can be decomposed into chains, such that each tree is a union
-            #     of chains. This is exactly the case for tree sequences: the paths from leaves to roots
-            #     are the chains.
-            #
-            #   - Meltzer [2009] extended this to to the sum-product algorithm (e.g. what we're doing).
-            #
-            #   - The free energy being minimized is exactly ... This is
-            #     important for us, as at makes an explicit connection between
-            #     the "likelihood" at the level of the ARG and that at the level
-            #     of the local trees.
 
             # The belief (posterior marginal) for for a node is defined as:
             #   prior(node) \prod_{neighbours} message_from_factor(neighbour, node)**weight(neighbour, node)
@@ -1452,8 +1423,16 @@ def get_dates(
     elif message_passing == "TRWS":
         # TODO: would be better to start from "vanilla" algorithm's output.
         # So: have a TRWS=int argument that runs a number of iterations
-        iterations = 100  # DEBUG
-        dynamic_prog = TRWSAlgorithms(priors, liklhd, progress=progress)
+
+        # warm start?
+        dynamic_prog = InOutAlgorithms(priors, liklhd, progress=progress)
+        dynamic_prog.inside_pass(cache_inside=False)
+        posterior = dynamic_prog.outside_pass(
+            standardize=outside_standardize, ignore_oldest_root=ignore_oldest_root
+        )
+
+        iterations = 10  # DEBUG
+        dynamic_prog = TRWSAlgorithms(priors, liklhd, progress=progress, belief=posterior)
         for i in range(iterations):
             dynamic_prog.inside_pass(standardize=True)
             posterior = dynamic_prog.outside_pass(standardize=True).clone()

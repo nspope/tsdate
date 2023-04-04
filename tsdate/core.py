@@ -869,6 +869,7 @@ class InOutAlgorithms:
 
         return self.lik.timepoints[np.array(maximized_node_times).astype("int")]
 
+
 # TODO: modify so messages don't have to be cached
 class TRWSAlgorithms(InOutAlgorithms):
     """
@@ -904,19 +905,19 @@ class TRWSAlgorithms(InOutAlgorithms):
 
         For debugging purposes only
         """
-        fwd = np.where(self.ts.tables.edges.parent == node_id)[0] #inside edges
-        bwd = np.where(self.ts.tables.edges.child == node_id)[0] #outside edges
+        fwd = np.where(self.ts.tables.edges.parent == node_id)[0]  # inside edges
+        bwd = np.where(self.ts.tables.edges.child == node_id)[0]  # outside edges
         assert edge_id in fwd or edge_id in bwd
         val = self.priors[node_id].copy()
         for e in fwd:
-            span = (self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e])
+            span = self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e]
             span /= self.ts.sequence_length
             if e == edge_id:
                 span -= 1
             message = self.lik.scale_geometric(span, self.inside_message[e])
             val = self.lik.combine(val, message)
         for e in bwd:
-            span = (self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e])
+            span = self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e]
             span /= self.ts.sequence_length
             if e == edge_id:
                 span -= 1
@@ -930,16 +931,16 @@ class TRWSAlgorithms(InOutAlgorithms):
 
         For debugging purposes only
         """
-        fwd = np.where(self.ts.tables.edges.parent == node_id)[0] #inside edges
-        bwd = np.where(self.ts.tables.edges.child == node_id)[0] #outside edges
+        fwd = np.where(self.ts.tables.edges.parent == node_id)[0]  # inside edges
+        bwd = np.where(self.ts.tables.edges.child == node_id)[0]  # outside edges
         val = self.priors[node_id].copy()
         for e in fwd:
-            span = (self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e])
+            span = self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e]
             span /= self.ts.sequence_length
             message = self.lik.scale_geometric(span, self.inside_message[e])
             val = self.lik.combine(val, message)
         for e in bwd:
-            span = (self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e])
+            span = self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e]
             span /= self.ts.sequence_length
             message = self.lik.scale_geometric(span, self.outside_message[e])
             val = self.lik.combine(val, message)
@@ -973,9 +974,9 @@ class TRWSAlgorithms(InOutAlgorithms):
             #     Minimizes free energy ... Bethe ...
             #     e.g. it produces the exact marginals / calculates the free energy exactly.
             #     When the graph has loops, all bets are off -- it is not guarenteed to converge,
-            #     and the marginals / free energy are not exact. 
+            #     and the marginals / free energy are not exact.
 
-            #   - Wainwright [2003] introduced a generalization of ... 
+            #   - Wainwright [2003] introduced a generalization of ...
             #   Note
             #   that they define the algo for spanning trees, but later this
             #   assumption was shown to not be necessary: any collection of
@@ -986,11 +987,11 @@ class TRWSAlgorithms(InOutAlgorithms):
             #   the probability distribution over trees.  However, in our case,
             #   this is known: the probablility distribution over trees is the
             #   relative span of each tree in the tree sequence.
-             
-            #   - Kolmogrov [2005] proved that (for the tree-reweighted max-product algorithm) 
+
+            #   - Kolmogrov [2005] proved that (for the tree-reweighted max-product algorithm)
             #     a particular update order rendered the algorithm globally
             #     convergent. Specifically, if the updates are done
-            #     tree-by-tree. This is very inefficient; but, he 
+            #     tree-by-tree. This is very inefficient; but, he
             #     showed that one construct an efficient algorithm (same complexity as BP) if the graph
             #     can be decomposed into chains, such that each tree is a union
             #     of chains. This is exactly the case for tree sequences: the paths from leaves to roots
@@ -1015,38 +1016,42 @@ class TRWSAlgorithms(InOutAlgorithms):
                 if edge.child in self.fixednodes:
                     child_message = self.lik.identity_constant
                     factor_message = self.lik.get_fixed(
-                        child_message, edge, scale=1./spanfrac
+                        child_message, edge, scale=1.0 / spanfrac
                     )
                 else:
                     if not visited[edge.child]:
                         raise ValueError(
                             "The input tree sequence includes dangling nodes: please simplify it"
                         )
-                    # The message from variable(child) to factor(child, parent): 
-                    #   prior(child) \times 
+                    # The message from variable(child) to factor(child, parent):
+                    #   prior(child) \times
                     #       message_from_factor(parent, child)**(weight(parent, child) - 1) \times
                     #       \prod_{nodes except parent} message_from_factor(node, child)**(weight(node, child))
                     #   = belief(child) \times message_from_factor(parent, child)**(-1)
-                    child_message = self.lik.ratio( 
-                        self.belief[edge.child], 
+                    child_message = self.lik.ratio(
+                        self.belief[edge.child],
                         self.outside_message[edge.id],
                         div_0_null=True,
                     )
                     factor_message = self.lik.get_inside(
-                        self.lik.make_lower_tri(child_message), edge, scale=1./spanfrac
+                        self.lik.make_lower_tri(child_message),
+                        edge,
+                        scale=1.0 / spanfrac,
                     )
                 if standardize:
                     assert np.max(factor_message) > self.lik.null_constant
-                    factor_message = self.lik.ratio(factor_message, np.max(factor_message))
-                val = self.lik.ratio( # remove old message
-                    val, 
+                    factor_message = self.lik.ratio(
+                        factor_message, np.max(factor_message)
+                    )
+                val = self.lik.ratio(  # remove old message
+                    val,
                     self.lik.scale_geometric(spanfrac, self.inside_message[edge.id]),
                     div_0_null=True,
                 )
-                val = self.lik.combine( # incorporate new message
+                val = self.lik.combine(  # incorporate new message
                     val, self.lik.scale_geometric(spanfrac, factor_message)
                 )
-                self.inside_message[edge.id] = factor_message # store unscaled
+                self.inside_message[edge.id] = factor_message  # store unscaled
 
             # Update beliefs at parent:
             #   prior(parent) \prod_{...} message_from_factor(...)**weight(neighbour, parent)
@@ -1089,7 +1094,9 @@ class TRWSAlgorithms(InOutAlgorithms):
         ):
             if child in self.fixednodes:
                 continue
-            val = self.belief[child].copy() #np.full(self.lik.grid_size, self.lik.identity_constant)
+            val = self.belief[
+                child
+            ].copy()  # np.full(self.lik.grid_size, self.lik.identity_constant)
             # val = prior * inside_message * outside_message
             for edge in edges:
                 if edge.parent in self.fixednodes:
@@ -1099,26 +1106,28 @@ class TRWSAlgorithms(InOutAlgorithms):
                 assert visited[edge.parent], "Edge order incorrect (bug)"
                 spanfrac = edge.span / self.ts.sequence_length
 
-                parent_message = self.lik.ratio( 
-                    self.belief[edge.parent], 
+                parent_message = self.lik.ratio(
+                    self.belief[edge.parent],
                     self.inside_message[edge.id],
                     div_0_null=True,
                 )
                 factor_message = self.lik.get_outside(
-                    self.lik.make_upper_tri(parent_message), edge, scale=1./spanfrac
+                    self.lik.make_upper_tri(parent_message), edge, scale=1.0 / spanfrac
                 )
                 if standardize:
                     assert np.max(factor_message) > self.lik.null_constant
-                    factor_message = self.lik.ratio(factor_message, np.max(factor_message))
-                val = self.lik.ratio( # remove old message
-                    val, 
+                    factor_message = self.lik.ratio(
+                        factor_message, np.max(factor_message)
+                    )
+                val = self.lik.ratio(  # remove old message
+                    val,
                     self.lik.scale_geometric(spanfrac, self.outside_message[edge.id]),
                     div_0_null=True,
                 )
-                val = self.lik.combine( # incorporate new message
+                val = self.lik.combine(  # incorporate new message
                     val, self.lik.scale_geometric(spanfrac, factor_message)
                 )
-                self.outside_message[edge.id] = factor_message # store unscaled
+                self.outside_message[edge.id] = factor_message  # store unscaled
             self.belief[child] = val
             visited[child] = True
         return self.belief
@@ -1203,7 +1212,7 @@ def date(
     time_units=None,
     priors=None,
     *,
-    message_passing="original", #TODO document
+    message_passing="original",  # TODO document
     Ne=None,
     return_posteriors=None,
     progress=False,
@@ -1443,12 +1452,12 @@ def get_dates(
     elif message_passing == "TRWS":
         # TODO: would be better to start from "vanilla" algorithm's output.
         # So: have a TRWS=int argument that runs a number of iterations
-        iterations = 100 #DEBUG
+        iterations = 100  # DEBUG
         dynamic_prog = TRWSAlgorithms(priors, liklhd, progress=progress)
         for i in range(iterations):
             dynamic_prog.inside_pass(standardize=True)
             posterior = dynamic_prog.outside_pass(standardize=True).clone()
-            # <DEBUG> 
+            # <DEBUG>
             # for testing -- assumes the true times are in the original ts
             posterior.standardize()  # Just to make sure there are no floating point issues
             posterior.force_probability_space(base.LIN)
@@ -1461,8 +1470,10 @@ def get_dates(
             )
             acc = np.mean(
                 np.abs(
-                    np.log10(mn_post[tree_sequence.num_samples:]) - 
-                    np.log10(tree_sequence.tables.nodes.time[tree_sequence.num_samples:])
+                    np.log10(mn_post[tree_sequence.num_samples :])
+                    - np.log10(
+                        tree_sequence.tables.nodes.time[tree_sequence.num_samples :]
+                    )
                 )
             )
             print(i, acc)
@@ -1475,9 +1486,7 @@ def get_dates(
             tree_sequence, posterior, fixed_node_set=fixed_nodes
         )
     else:
-        raise ValueError(
-            "message passing method must be either 'TRWS' or 'original'"
-        )
+        raise ValueError("message passing method must be either 'TRWS' or 'original'")
 
     return (
         tree_sequence,

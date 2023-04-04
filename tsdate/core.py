@@ -869,7 +869,7 @@ class InOutAlgorithms:
 
         return self.lik.timepoints[np.array(maximized_node_times).astype("int")]
 
-
+# TODO: modify so messages don't have to be cached
 class TRWSAlgorithms(InOutAlgorithms):
     """
     Implementation of the sequential tree reweighted message passing algorithm.
@@ -877,8 +877,8 @@ class TRWSAlgorithms(InOutAlgorithms):
     See Kolmogorov [2005] "..." for the original, max-product formulation.
     """
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
         # Messages passed from factors in the direction of roots
         self.inside_message = np.full(
@@ -893,26 +893,72 @@ class TRWSAlgorithms(InOutAlgorithms):
         )
 
         # the approximate posterior marginals
-        self.belief = self.prior.clone_with_new_data(
-            grid_data=self.lik.identity_constant,
+        self.belief = self.priors.clone_with_new_data(
+            grid_data=self.priors.grid_data.copy(),
             fixed_data=np.nan,
         )
 
-    def inside_pass(self, *, standardize=False, progress=None):
+    def _message_to_factor(self, node_id, edge_id):
+        """
+        Assemble message from the node to the edge
+
+        For debugging purposes only
+        """
+        fwd = np.where(self.ts.tables.edges.parent == node_id)[0] #inside edges
+        bwd = np.where(self.ts.tables.edges.child == node_id)[0] #outside edges
+        assert edge_id in fwd or edge_id in bwd
+        val = self.priors[node_id].copy()
+        for e in fwd:
+            span = (self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e])
+            span /= self.ts.sequence_length
+            if e == edge_id:
+                span -= 1
+            message = self.lik.scale_geometric(span, self.inside_message[e])
+            val = self.lik.combine(val, message)
+        for e in bwd:
+            span = (self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e])
+            span /= self.ts.sequence_length
+            if e == edge_id:
+                span -= 1
+            message = self.lik.scale_geometric(span, self.outside_message[e])
+            val = self.lik.combine(val, message)
+        return val
+
+    def _belief(self, node_id):
+        """
+        Get belief for a node
+
+        For debugging purposes only
+        """
+        fwd = np.where(self.ts.tables.edges.parent == node_id)[0] #inside edges
+        bwd = np.where(self.ts.tables.edges.child == node_id)[0] #outside edges
+        val = self.priors[node_id].copy()
+        for e in fwd:
+            span = (self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e])
+            span /= self.ts.sequence_length
+            message = self.lik.scale_geometric(span, self.inside_message[e])
+            val = self.lik.combine(val, message)
+        for e in bwd:
+            span = (self.ts.tables.edges.right[e] - self.ts.tables.edges.left[e])
+            span /= self.ts.sequence_length
+            message = self.lik.scale_geometric(span, self.outside_message[e])
+            val = self.lik.combine(val, message)
+        return val
+
+    def inside_pass(self, *, cache_inside=False, standardize=True, progress=None):
         """
         Use dynamic programming to pass span-weighted messages in the direction of the roots.
         """
         if progress is None:
             progress = self.progress
 
-        denominator = np.full(self.ts.num_nodes, np.nan)
         visited = np.full(self.ts.num_nodes, True)
 
         # Iterate through the nodes via groupby on parent node
         for parent, edges in tqdm(
             self.edges_by_parent_asc(),
             desc="Inside TRW-S",
-            total=inside.num_nonfixed,
+            total=self.priors.num_nonfixed,
             disable=not progress,
         ):
             """
@@ -959,7 +1005,7 @@ class TRWSAlgorithms(InOutAlgorithms):
 
             # The belief (posterior marginal) for for a node is defined as:
             #   prior(node) \prod_{neighbours} message_from_factor(neighbour, node)**weight(neighbour, node)
-            val = self.priors[parent].copy()
+            val = self.belief[parent].copy()
 
             for edge in edges:
                 spanfrac = edge.span / self.ts.sequence_length
@@ -972,7 +1018,7 @@ class TRWSAlgorithms(InOutAlgorithms):
                         child_message, edge, scale=1./spanfrac
                     )
                 else:
-                    if not visited[child]:
+                    if not visited[edge.child]:
                         raise ValueError(
                             "The input tree sequence includes dangling nodes: please simplify it"
                         )
@@ -982,34 +1028,36 @@ class TRWSAlgorithms(InOutAlgorithms):
                     #       \prod_{nodes except parent} message_from_factor(node, child)**(weight(node, child))
                     #   = belief(child) \times message_from_factor(parent, child)**(-1)
                     child_message = self.lik.ratio( 
-                        self.belief[edge.child], self.outside_message[edge.id]
+                        self.belief[edge.child], 
+                        self.outside_message[edge.id],
+                        div_0_null=True,
                     )
                     factor_message = self.lik.get_inside(
                         self.lik.make_lower_tri(child_message), edge, scale=1./spanfrac
                     )
-                val = self.lik.combine(
+                if standardize:
+                    assert np.max(factor_message) > self.lik.null_constant
+                    factor_message = self.lik.ratio(factor_message, np.max(factor_message))
+                val = self.lik.ratio( # remove old message
+                    val, 
+                    self.lik.scale_geometric(spanfrac, self.inside_message[edge.id]),
+                    div_0_null=True,
+                )
+                val = self.lik.combine( # incorporate new message
                     val, self.lik.scale_geometric(spanfrac, factor_message)
                 )
                 self.inside_message[edge.id] = factor_message # store unscaled
 
             # Update beliefs at parent:
             #   prior(parent) \prod_{...} message_from_factor(...)**weight(neighbour, parent)
-            standardize = False #DEBUG
-            denominator[parent] = (
-                np.max(val) if standardize else self.lik.identity_constant
-            )
-            self.belief[parent] = self.lik.ratio(val, denominator[parent])
+            self.belief[parent] = val
             visited[parent] = True
-
-        #self.inside_message = self.lik.ratio(
-        #    self.inside_message, denominator[self.ts.tables.edges.child, None]
-        #) # TODO: um not sure?
-        self.denominator = denominator
 
     def outside_pass(
         self,
         *,
-        standardize=False,
+        standardize=True,
+        ignore_oldest_root=False,
         progress=None,
     ):
         """
@@ -1029,7 +1077,9 @@ class TRWSAlgorithms(InOutAlgorithms):
         if progress is None:
             progress = self.progress
 
-        visited = np.full(ts.num_nodes, False)
+        visited = np.full(self.ts.num_nodes, False)
+        for root, _ in self.root_spans.items():
+            visited[root] = True
 
         for child, edges in tqdm(
             self.edges_by_child_desc(),
@@ -1039,7 +1089,8 @@ class TRWSAlgorithms(InOutAlgorithms):
         ):
             if child in self.fixednodes:
                 continue
-            val = np.full(self.lik.grid_size, self.lik.identity_constant)
+            val = self.belief[child].copy() #np.full(self.lik.grid_size, self.lik.identity_constant)
+            # val = prior * inside_message * outside_message
             for edge in edges:
                 if edge.parent in self.fixednodes:
                     raise RuntimeError(
@@ -1049,20 +1100,27 @@ class TRWSAlgorithms(InOutAlgorithms):
                 spanfrac = edge.span / self.ts.sequence_length
 
                 parent_message = self.lik.ratio( 
-                    self.belief[edge.parent], self.inside_message[edge.id]
+                    self.belief[edge.parent], 
+                    self.inside_message[edge.id],
+                    div_0_null=True,
                 )
                 factor_message = self.lik.get_outside(
                     self.lik.make_upper_tri(parent_message), edge, scale=1./spanfrac
                 )
-                val = self.lik.combine(
+                if standardize:
+                    assert np.max(factor_message) > self.lik.null_constant
+                    factor_message = self.lik.ratio(factor_message, np.max(factor_message))
+                val = self.lik.ratio( # remove old message
+                    val, 
+                    self.lik.scale_geometric(spanfrac, self.outside_message[edge.id]),
+                    div_0_null=True,
+                )
+                val = self.lik.combine( # incorporate new message
                     val, self.lik.scale_geometric(spanfrac, factor_message)
                 )
                 self.outside_message[edge.id] = factor_message # store unscaled
-
-            #assert self.denominator[edge.child] > self.lik.null_constant
-            #outside[child] = self.lik.ratio(val, self.denominator[child])
-            #if standardize:
-            #    outside[child] = self.lik.ratio(val, np.max(val))
+            self.belief[child] = val
+            visited[child] = True
         return self.belief
 
 
@@ -1145,6 +1203,7 @@ def date(
     time_units=None,
     priors=None,
     *,
+    message_passing="original", #TODO document
     Ne=None,
     return_posteriors=None,
     progress=False,
@@ -1244,6 +1303,7 @@ def date(
         recombination_rate=recombination_rate,
         priors=priors,
         progress=progress,
+        message_passing=message_passing,
         **kwargs,
     )
     constrained = constrain_ages_topo(tree_sequence, dates, eps, nds, progress)
@@ -1281,6 +1341,7 @@ def get_dates(
     eps=1e-6,
     num_threads=None,
     method="inside_outside",
+    message_passing="original",
     outside_standardize=True,
     ignore_oldest_root=False,
     progress=False,
@@ -1355,18 +1416,57 @@ def get_dates(
     if mutation_rate is not None:
         liklhd.precalculate_mutation_likelihoods(num_threads=num_threads)
 
-    if method == "TRWS":
-        dynamic_prog = TRWSAlgorithms(priors, liklhd, progress=progress)
-    else:
+    if message_passing == "original":
         dynamic_prog = InOutAlgorithms(priors, liklhd, progress=progress)
-
-    dynamic_prog.inside_pass(cache_inside=False)
-
-    posterior = None
-    if method == "inside_outside":
-        posterior = dynamic_prog.outside_pass(
-            standardize=outside_standardize, ignore_oldest_root=ignore_oldest_root
-        )
+        dynamic_prog.inside_pass(cache_inside=False)
+        posterior = None
+        if method == "inside_outside":
+            posterior = dynamic_prog.outside_pass(
+                standardize=outside_standardize, ignore_oldest_root=ignore_oldest_root
+            )
+            # Turn the posterior into probabilities
+            posterior.standardize()  # Just to make sure there are no floating point issues
+            posterior.force_probability_space(base.LIN)
+            posterior.to_probabilities()
+            tree_sequence, mn_post, _ = posterior_mean_var(
+                tree_sequence, posterior, fixed_node_set=fixed_nodes
+            )
+        elif method == "maximization":
+            if mutation_rate is not None:
+                mn_post = dynamic_prog.outside_maximization(eps=eps)
+            else:
+                raise ValueError("Outside maximization method requires mutation rate")
+        else:
+            raise ValueError(
+                "estimation method must be either 'inside_outside' or 'maximization'"
+            )
+    elif message_passing == "TRWS":
+        # TODO: would be better to start from "vanilla" algorithm's output.
+        # So: have a TRWS=int argument that runs a number of iterations
+        iterations = 100 #DEBUG
+        dynamic_prog = TRWSAlgorithms(priors, liklhd, progress=progress)
+        for i in range(iterations):
+            dynamic_prog.inside_pass(standardize=True)
+            posterior = dynamic_prog.outside_pass(standardize=True).clone()
+            # <DEBUG> 
+            # for testing -- assumes the true times are in the original ts
+            posterior.standardize()  # Just to make sure there are no floating point issues
+            posterior.force_probability_space(base.LIN)
+            posterior.to_probabilities()
+            _, mn_post, _ = posterior_mean_var(
+                tree_sequence, posterior, fixed_node_set=fixed_nodes
+            )
+            mn_post = constrain_ages_topo(
+                tree_sequence, mn_post, eps, priors.nonfixed_nodes, progress
+            )
+            acc = np.mean(
+                np.abs(
+                    np.log10(mn_post[tree_sequence.num_samples:]) - 
+                    np.log10(tree_sequence.tables.nodes.time[tree_sequence.num_samples:])
+                )
+            )
+            print(i, acc)
+            # </DEBUG>
         # Turn the posterior into probabilities
         posterior.standardize()  # Just to make sure there are no floating point issues
         posterior.force_probability_space(base.LIN)
@@ -1374,14 +1474,9 @@ def get_dates(
         tree_sequence, mn_post, _ = posterior_mean_var(
             tree_sequence, posterior, fixed_node_set=fixed_nodes
         )
-    elif method == "maximization":
-        if mutation_rate is not None:
-            mn_post = dynamic_prog.outside_maximization(eps=eps)
-        else:
-            raise ValueError("Outside maximization method requires mutation rate")
     else:
         raise ValueError(
-            "estimation method must be either 'inside_outside' or 'maximization'"
+            "message passing method must be either 'TRWS' or 'original'"
         )
 
     return (

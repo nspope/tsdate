@@ -169,6 +169,11 @@ class NodeGridValues:
         else:
             self.grid_data[index, :] = value
 
+    def clone(self):
+        return self.clone_with_new_data(
+            grid_data=self.grid_data, fixed_data=self.fixed_data
+        )
+
     def clone_with_new_data(
         self, grid_data=np.nan, fixed_data=None, probability_space=None
     ):

@@ -1027,6 +1027,7 @@ class ExpectationPropagation(InOutAlgorithms):
             child_cavity = self.lik.ratio(
                 self.posterior[edge.child], self.child_message[edge.id]
             )
+            #print("edge", edge.id, "\n", np.concatenate([[edge.id], parent_cavity, child_cavity, edge_lik]).tolist())
             # target posterior matches cavity with exact edge factor
             (
                 norm_const,
@@ -1052,6 +1053,20 @@ class ExpectationPropagation(InOutAlgorithms):
         # TODO
         # marginal_lik = np.sum(self.factor_norm)
         # return marginal_lik
+
+    def dump_info(self, filename):
+        #print("priors\n", np.column_stack([self.priors.nonfixed_nodes, self.priors.grid_data]).tolist())
+        #print("messages\n", np.column_stack([
+        #    np.arange(self.ts.num_edges), self.ts.tables.edges.parent, self.ts.tables.edges.child, 
+        #    self.parent_message[:,0], self.parent_message[:,1], self.child_message[:,0], self.child_message[:,1],
+        #]).tolist())
+        #print("posterior\n", np.column_stack([self.posterior.nonfixed_nodes, self.posterior.grid_data]).tolist())
+        out = np.column_stack([
+            self.ts.tables.nodes.time, np.zeros(self.ts.num_nodes), np.ones(self.ts.num_nodes)
+        ])
+        out[self.posterior.nonfixed_nodes,1] = self.posterior.grid_data[:,0]
+        out[self.posterior.nonfixed_nodes,2] = self.posterior.grid_data[:,1]
+        np.savetxt(filename, out)
 
 
 def posterior_mean_var(ts, posterior, *, fixed_node_set=None):
@@ -1369,7 +1384,7 @@ def get_dates(
         posterior.standardize()  # Just to make sure there are no floating point issues
         posterior.force_probability_space(base.LIN)
         posterior.to_probabilities()
-        tree_sequence, mn_post, _ = posterior_mean_var(
+        tree_sequence2, mn_post, va_post = posterior_mean_var(
             tree_sequence, posterior, fixed_node_set=fixed_nodes
         )
     elif method == "maximization":
@@ -1381,6 +1396,12 @@ def get_dates(
         raise ValueError(
             "estimation method must be either 'inside_outside' or 'maximization'"
         )
+
+    out = np.column_stack([
+        tree_sequence.tables.nodes.time, mn_post, va_post
+    ])
+    np.savetxt("orig_times.txt", out)
+    tree_sequence = tree_sequence2
 
     return (
         tree_sequence,
@@ -1514,6 +1535,7 @@ def variational_dates(
     dynamic_prog = ExpectationPropagation(priors, liklhd, progress=progress)
     for _ in range(expectation_propagation):
         dynamic_prog.iterate()
+        dynamic_prog.dump_info("var_times." + str(_) + ".txt")
     posterior = dynamic_prog.posterior
     tree_sequence, mn_post, _ = variational_mean_var(
         tree_sequence, posterior, fixed_node_set=fixed_nodes

@@ -206,6 +206,9 @@ def sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij):
         - hypergeo._digamma(c)
     )
 
+    if not sign_f > 0:
+        raise hypergeo.Invalid2F1("Degenerate posterior approximation")
+
     return logconst, t_i, ln_t_i, t_j, ln_t_j
 
 
@@ -238,18 +241,19 @@ def mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij, dps=100, maxterms=1e4):
     z = (mu_ij - b_j) / t
 
     if not (a > 0 and b > 0 and c > 0 and t > 0):  # skip update
-        raise Exception("Negative parameters")
+        raise DegenerateUpdate("Invalid parameter values in EP update")
 
     # 2F1 and first/second derivatives of argument, in arbitrary precision
     with mpmath.workdps(dps):
         s0 = a * b / c
         s1 = s0 * (a + 1) * (b + 1) / (c + 1)
-        v0 = mpmath.hyp2f1(a, b, c, z, maxterms=maxterms)
-        v1 = s0 * (mpmath.hyp2f1(a + 1, b + 1, c + 1, z, maxterms=maxterms) / v0)
-        v2 = s1 * (mpmath.hyp2f1(a + 2, b + 2, c + 2, z, maxterms=maxterms) / v0)
-        logconst = float(mpmath.log(v0))
-        dz = float(v1)
-        d2z = float(v2)
+        f0 = mpmath.hyp2f1(a, b, c, z, maxterms=maxterms)
+        f1 = s0 * (mpmath.hyp2f1(a + 1, b + 1, c + 1, z, maxterms=maxterms) / f0)
+        f2 = s1 * (mpmath.hyp2f1(a + 2, b + 2, c + 2, z, maxterms=maxterms) / f0)
+        sign_f = mpmath.sign(f0)
+        logconst = float(mpmath.log(mpmath.fabs(f0)))
+        dz = float(f1)
+        d2z = float(f2)
 
     # mean / variance of child and parent age
     logconst += hypergeo._betaln(y_ij + 1, b) + hypergeo._gammaln(a) - a * np.log(t)
@@ -257,6 +261,9 @@ def mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij, dps=100, maxterms=1e4):
     va_t_i = z / t**2 * (d2z * z + 2 * dz * (1 + a)) + a * (1 + a) / t**2 - t_i**2
     t_j = dz / t
     va_t_j = d2z / t**2 - t_j**2
+
+    if not sign_f > 0:
+        raise hypergeo.Invalid2F1("Degenerate posterior approximation")
 
     return logconst, t_i, va_t_i, t_j, va_t_j
 

@@ -210,7 +210,7 @@ def mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij, dps=100, maxterms=1e4):
     """
     Calculate mean and variance for the PDF proportional to
     :math:`Ga(t_j | a_j, b_j) Ga(t_i | a_i, b_i) Po(y_{ij} |
-    \\mu_{ij} t_i - t_j)`, where :math:`i` is the parent and :math:`j` is
+    \\mu_{ij} (t_i - t_j))`, where :math:`i` is the parent and :math:`j` is
     the child.
 
     This is intended to provide a stable approximation when calculation of
@@ -304,3 +304,121 @@ def gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij):
             )
 
     return logconst, np.array(proj_i), np.array(proj_j)
+
+
+def mutation_sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij):
+    """
+    Calculate gamma sufficient statistics for the PDF proportional to:
+    
+    ..math::
+
+        p(x) = \int_0^\infty \int_0^{t_i} Unif(x | t_i, t_j) 
+        Ga(t_i | a_i, b_i) Ga(t_j | a_j b_j) Po(y | \mu_ij (t_i - t_j)) dt_j dt_i
+    
+    which models the time :math:`x` of a mutation uniformly distributed between
+    parent age :math:`t_i` and child age :math:`t_j`, on a branch with
+    :math:`y_{ij}` mutations and total mutation rate :math:`\mu_{ij}`.
+
+    Returns E[x] and E[\log x].
+    """
+
+    # E[t_m]
+    f, t_i, _, t_j, _ = sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij)
+    t_m = t_i / 2 + t_j / 2
+
+    # E[log t_m]
+    f_i, _, ln_t_i, _, _ = sufficient_statistics(a_i + 1, b_i, a_j, b_j, y_ij - 1, mu_ij)
+    f_j, _, _, _, ln_t_j = sufficient_statistics(a_i, b_i, a_j + 1, b_j, y_ij - 1, mu_ij)
+    ln_t_m = np.exp(f_j - f) * (1.0 - ln_t_j) - np.exp(f_i - f) * (1.0 - ln_t_i)
+
+    return t_m, ln_t_m
+
+
+def mutation_mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij):
+    r"""
+    Calculate mean and variance of the PDF proportional to:
+    
+    ..math::
+
+        p(x) = \int_0^\infty \int_0^{t_i} Unif(x | t_i, t_j) 
+        Ga(t_i | a_i, b_i) Ga(t_j | a_j b_j) Po(y | \mu_ij (t_i - t_j)) dt_j dt_i
+    
+    which models the time :math:`x` of a mutation uniformly distributed between
+    parent age :math:`t_i` and child age :math:`t_j`, on a branch with
+    :math:`y_{ij}` mutations and total mutation rate :math:`\mu_{ij}`.
+
+    Returns E[x] and V[x].
+    """
+
+    # E[t_m]
+    #f, t_i, _, t_j, _ = sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij)
+    f, t_i, _, t_j, _ = mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij)
+    t_m = t_i / 2 + t_j / 2
+
+    # V[t_m]
+    #f_i, *_ = sufficient_statistics(a_i + 2, b_i, a_j, b_j, y_ij, mu_ij)
+    #f_ij, *_ = sufficient_statistics(a_i + 1, b_i, a_j + 1, b_j, y_ij, mu_ij)
+    #f_j, *_ = sufficient_statistics(a_i, b_i, a_j + 2, b_j, y_ij, mu_ij)
+    f_i, *_ = mean_and_variance(a_i + 2, b_i, a_j, b_j, y_ij, mu_ij)
+    f_ij, *_ = mean_and_variance(a_i + 1, b_i, a_j + 1, b_j, y_ij, mu_ij)
+    f_j, *_ = mean_and_variance(a_i, b_i, a_j + 2, b_j, y_ij, mu_ij)
+    va_t_m = 1/3 * (np.exp(f_i - f) + np.exp(f_ij - f) + np.exp(f_j - f)) - t_m ** 2
+
+    return t_m, va_t_m
+
+
+def mutation_gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij, leaf = False):
+    r"""
+    Match a gamma distribution via KL minimization to the potential function
+    
+    ..math::
+
+        p(x) = \int_0^\infty \int_0^{t_i} Unif(x | t_i, t_j) 
+        Ga(t_i | a_i, b_i) Ga(t_j | a_j b_j) Po(y | \mu_ij (t_i - t_j)) dt_j dt_i
+
+    which models the time :math:`x` of a mutation uniformly distributed between
+    parent age :math:`t_i` and child age :math:`t_j`, on a branch with
+    :math:`y_{ij}` mutations and total mutation rate :math:`\mu_{ij}`.
+
+    :param float a_i: the shape parameter of the cavity distribution for the parent
+    :param float b_i: the rate parameter of the cavity distribution for the parent
+    :param float a_j: the shape parameter of the cavity distribution for the child
+    :param float b_j: the rate parameter of the cavity distribution for the child
+    :param float y_ij: the number of mutations on the edge
+    :param float mu_ij: the span-weighted mutation rate of the edge
+
+    :return: gamma parameters for mutation age
+    """
+    if leaf:
+        # E[x] = int_0^inf int_0^t x/t Ga(t | a, b) dx dt = E[t] / 2
+        # E[ln x] = int_0^inf int_0^t log(x)/t Ga(t | a, b) dx dt = E[log t] - 1.0
+        t = 0.5 * (y_ij + a_i) / (mu_ij + b_i)
+        ln_t = hypergeo._digamma(y_ij + a_i) - np.log(mu_ij + b_i) - 1.0
+        proj_t = approximate_gamma_kl(t, ln_t)
+    else:
+        try:
+            t, ln_t = mutation_sufficient_statistics(
+                a_i, b_i, a_j, b_j, y_ij, mu_ij
+            )
+            proj_t = approximate_gamma_kl(t, ln_t)
+        except (hypergeo.Invalid2F1, KLMinimizationFailed):
+            try:
+                logging.info(
+                    f"Matching sufficient statistics failed with parameters: "
+                    f"{a_i} {b_i} {a_j} {b_j} {y_ij} {mu_ij},"
+                    f"matching mean and variance instead"
+                )
+                t, va_t = mutation_mean_and_variance(
+                    a_i, b_i, a_j, b_j, y_ij, mu_ij
+                )
+                proj_t = approximate_gamma_mom(t, va_t)
+            except MPNoConvergence:
+                raise hypergeo.Invalid2F1(
+                    "Hypergeometric series does not converge; the approximate "
+                    "marginal is likely degenerate.  This may reflect a topological "
+                    "constraint that is at odds with the mutational data. Setting "
+                    "'max_shape' to a large value (e.g. 1000) will prevent degenerate "
+                    "marginals, but the results should be treated with care."
+                )
+
+    return np.array(proj_t)

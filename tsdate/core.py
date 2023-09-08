@@ -562,7 +562,7 @@ class VariationalLikelihoods:
         return the natural parameterization instead.
         """
         y = self.mut_edges[edge.id]
-        #mu = edge.span * self.mut_rate #TODO delete
+        # mu = edge.span * self.mut_rate #TODO delete
         mu = self.span_edges[edge.id] * self.mut_rate
         if natural:
             return np.array([y, mu])
@@ -575,7 +575,7 @@ class VariationalLikelihoods:
         Get the number of mutations on each edge in the tree sequence.
         Also the span
         """
-        #return Likelihoods.get_mut_edges(ts) #TODO delete
+        # return Likelihoods.get_mut_edges(ts) #TODO delete
         mut_edges = np.zeros(ts.num_edges, dtype=np.int64)
         spn_edges = np.zeros(ts.num_edges)
         if downsample:
@@ -586,7 +586,7 @@ class VariationalLikelihoods:
                 for node in tree.nodes():
                     edges = [tree.edge(j) for j in tree.children(node)]
                     if len(edges) > 0:
-                        assert len(edges) > 1 #no unary for now
+                        assert len(edges) > 1  # no unary for now
                         np.random.shuffle(edges)
                         sample |= set(edges[:2])
                 for k in sample:
@@ -600,7 +600,7 @@ class VariationalLikelihoods:
                     mut_edges[m.edge] += 1
             for i, e in enumerate(ts.edges()):
                 spn_edges[i] = e.span
-                
+
         return mut_edges, spn_edges
 
     @staticmethod
@@ -1122,7 +1122,7 @@ class ExpectationPropagation(InOutAlgorithms):
 
             # Get the contribution to the (approximate) marginal likelihood from
             # the edge.
-            self.factor_norm[edge.id] = norm_const # TODO not complete
+            self.factor_norm[edge.id] = norm_const  # TODO not complete
 
     def iterate(self, *, iter_num=None, progress=None, max_shape=None):
         """
@@ -1158,7 +1158,7 @@ class ExpectationPropagation(InOutAlgorithms):
         post_by_edge = np.full((self.ts.num_edges, 2), np.nan)
         for edge in self.edges_by_parent_asc(grouped=False):
             edge_lik = self.lik.to_gamma(edge, natural=True)
-            if edge_lik[0] > 0: # edge has at least one mutation
+            if edge_lik[0] > 0:  # edge has at least one mutation
                 parent_cavity = self.lik.ratio(
                     self.posterior[edge.parent], self.parent_message[edge.id]
                 )
@@ -1689,7 +1689,7 @@ def variational_dates(
         dynamic_prog.iterate(iter_num=it, max_shape=max_shape)
 
     global foo
-    foo = dynamic_prog.date_mutations() #DEBUG
+    foo = dynamic_prog.date_mutations()  # DEBUG
 
     posterior = dynamic_prog.posterior
     tree_sequence, mn_post, _ = variational_mean_var(
@@ -1705,188 +1705,3 @@ def variational_dates(
         priors.nonfixed_nodes,
         np.nan,
     )
-
-# TODO DELETEME DEBUG
-
-def resolve_polytomy(parent_node_id, child_ids, new_nodes_by_time, rng):
-    """
-    For a polytomy and list of child node ids, return a list of (child, parent) tuples,
-    describing a bifurcating tree, rooted at parent_node_id, where the new_nodes_by_time
-    have been used to break polytomies. All possible topologies should be equiprobable.
-    """
-    assert len(child_ids) == len(new_nodes_by_time) + 2
-    edges = [[child_ids[0], None], ]  # Introduce a single edge that will be deleted later
-    edge_choice = rng.integers(0, np.arange(1, len(child_ids) * 2 - 1, 2))
-    tmp_new_node_lab = [parent_node_id] + new_nodes_by_time
-    assert len(edge_choice) == len(child_ids) - 1
-    for node_lab, child_id, target_edge_id in zip(tmp_new_node_lab, child_ids[1:], edge_choice):
-        target_edge = edges[target_edge_id]
-        # print("target", target_edge)
-        # Insert to keep edges in time order of parent
-        edges.insert(target_edge_id, [child_id, node_lab])
-        edges.insert(target_edge_id, [target_edge[0], node_lab])
-        target_edge[0] = node_lab
-    # We need to re-map the internal nodes so that they are in time order
-    real_node = iter(new_nodes_by_time)
-    edges.pop() # remove the unary node at the top
-    node_map = {c: c for c in child_ids}
-    # print("orig_edges", edges)
-    # print("parent IDs to allocate", new_nodes_by_time)
-    # last edge should have the highest node
-    node_map[edges[-1][1]] = parent_node_id
-    for e in reversed(edges):
-        # edges should be in time order - the oldest one can be give the parent_node_id
-        if e[1] not in node_map:
-            node_map[e[1]] = next(real_node)
-        if e[0] not in node_map:
-            node_map[e[0]] = next(real_node)
-        e[0] = node_map[e[0]]
-        e[1] = node_map[e[1]]
-    # print("mapped edges", edges)
-    assert len(node_map) == len(new_nodes_by_time) + len(child_ids) + 1
-    return edges
-
-
-def resolve_polytomies(ts, *, epsilon=1e-10, random_seed=None):
-    """
-    For a given parent node, an edge in or an edge out signifies a change in children
-    Each time such a change happens, we cut all existing edges with that parent,
-    and add the previous portion in to the new edge table. If, previously, there were
-    3 or more children for this node, we break the polytomy at random
-    """
-    rng = np.random.default_rng(seed=random_seed)
-
-    tables = ts.dump_tables()
-    edges_table = tables.edges
-    nodes_table = tables.nodes
-    # Store the left of the existing edges, as we will need to change it if the edge is split
-    existing_edges_left = edges_table.left
-    # Keep these arrays for handy reading later
-    existing_edges_right = edges_table.right
-    existing_edges_parent = edges_table.parent
-    existing_edges_child = edges_table.child
-    existing_node_time = nodes_table.time
-
-    edges_table.clear()
-
-    edges_for_node = defaultdict(set)  # The edge ids dangling from each active node
-    nodes_changed = set()
-
-    for interval, e_out, e_in in ts.edge_diffs(include_terminal=True):
-        for edge in itertools.chain(e_out, e_in):
-            if edge.parent != tskit.NULL:
-                nodes_changed.add(edge.parent)
-
-        pos = interval[0]
-        for parent_node in nodes_changed:
-            child_edge_ids = edges_for_node[parent_node]
-            if len(child_edge_ids) >= 3:
-                # We have a previous polytomy to break
-                parent_time = existing_node_time[parent_node]
-                new_nodes = []
-                child_ids = existing_edges_child[list(child_edge_ids)]
-                remaining_edges = child_edge_ids.copy()
-                left = None
-                max_time = 0
-                for edge_id, child_id in zip(child_edge_ids, child_ids):
-                    max_time = max(max_time, existing_node_time[child_id])
-                    if left is None:
-                        left = existing_edges_left[edge_id]
-                    else:
-                        assert left == existing_edges_left[edge_id]
-                    if existing_edges_right[edge_id] > interval[0]:
-                        # make sure we carry on the edge after this polytomy
-                        existing_edges_left[edge_id] = pos
-
-                # ADD THE PREVIOUS EDGE SEGMENTS
-                dt = min((parent_time - max_time)/(len(child_ids)*2), epsilon)
-                # Each broken polytomy of degree N introduces N-2 extra nodes, each at a time
-                # slighly less than the parent_time. Create new nodes in order of decreasing time
-                new_nodes = [nodes_table.add_row(time=parent_time - (i * dt))
-                             for i in range(1, len(child_ids) - 1)]
-                # print("new_nodes:", new_nodes, [tables.nodes[n].time for n in new_nodes])
-                for new_edge in resolve_polytomy(parent_node, child_ids, new_nodes, rng):
-                    edges_table.add_row(left=left, right=pos, child=new_edge[0], parent=new_edge[1])
-                    # print("new_edge: left={}, right={}, child={}, parent={}".format(
-                    #     left, pos, new_edge[0], new_edge[1]))
-            else:
-                # Previous node was not a polytomy - just add the edges_out, with modified left
-                for edge_id in child_edge_ids:
-                    if existing_edges_right[edge_id] == pos:  # this edge has just gone out
-                        edges_table.add_row(
-                            left=existing_edges_left[edge_id],
-                            right=pos,
-                            parent=parent_node,
-                            child=existing_edges_child[edge_id],
-                        )
-
-        for edge in e_out: 
-            if edge.parent != tskit.NULL:
-                # print("REMOVE", edge.id)
-                edges_for_node[edge.parent].remove(edge.id)
-        for edge in e_in:
-            if edge.parent != tskit.NULL:
-                # print("ADD", edge.id)
-                edges_for_node[edge.parent].add(edge.id)            
-
-        # Chop if we have created a polytomy: the polytomy itself will be resolved
-        # at a future iteration, when any of the edges move in or out of the polytomy
-        while nodes_changed:
-            node = nodes_changed.pop()
-            edge_ids = edges_for_node[node]
-            # print("Looking at", node)
-
-            if len(edge_ids) == 0:
-                del edges_for_node[node]
-            # if this node has changed *to* a polytomy, we need to cut all of the
-            # child edges that were previously present by adding the previous segment
-            # and left-truncating
-            elif len(edge_ids) >= 3:
-                # print("Polytomy at", node, " breaking edges")
-                for edge_id in edge_ids:
-                    if existing_edges_left[edge_id] < interval[0]:
-                        tables.edges.add_row(
-                            left=existing_edges_left[edge_id],
-                            right=interval[0],
-                            parent=existing_edges_parent[edge_id],
-                            child=existing_edges_child[edge_id],
-                        )
-                    existing_edges_left[edge_id] = interval[0]
-    assert len(edges_for_node) == 0
-
-    tables.edges.squash()
-    tables.sort() # Shouldn't need to do this: https://github.com/tskit-dev/tskit/issues/808
-
-    return tables.tree_sequence()
-
-def desc_count(ts):
-    out = np.full(ts.num_mutations, np.nan)
-    for tree in ts.trees():
-        for mut in tree.mutations():
-            out[mut.id] = tree.num_samples(mut.node)
-    return out
-
-def downsample_edges(ts):
-    """
-    Assuming polytomies encode an unknown (binary) topology, downsample edges
-    in each tree such that a given node has two children. Accumulate mutations
-    and span for the downsampled edges only.
-    """
-    edge_span = np.zeros(ts.num_edges)
-    edge_mut = np.zeros(ts.num_edges, dtype=int)
-    for tree in ts.trees():
-        downsample = set()
-        span = tree.interval.right - tree.interval.left
-        for node in tree.nodes():
-            edges = [tree.edge(j) for j in tree.children(node)]
-            if len(edges) > 0:
-                assert len(edges) > 1 #no unary for now
-                np.random.shuffle(edges)
-                downsample |= set(edges[:2])
-        for k in downsample:
-            edge_span[k] += span
-        for m in tree.mutations():
-            if m.edge in downsample:
-                edge_mut[m.edge] += 1
-
-    return edge_span, edge_mut

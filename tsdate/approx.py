@@ -178,11 +178,10 @@ def sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij):
     b = a_j
     c = a_j + y_ij + 1
     t = mu_ij + b_i
+    z = (mu_ij - b_j) / t
 
-    assert a > 0
-    assert b > 0
-    assert c > 0
-    assert t > 0
+    if not (a > 0 and b > 0 and c > 0 and t > 0):  # skip update
+        raise Exception("Negative parameters")
 
     log_f, sign_f, da_i, db_i, da_j, db_j = hypergeo._hyp2f1(
         a_i, b_i, a_j, b_j, y_ij, mu_ij
@@ -234,10 +233,8 @@ def mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij, dps=100, maxterms=1e4):
     t = mu_ij + b_i
     z = (mu_ij - b_j) / t
 
-    assert a > 0
-    assert b > 0
-    assert c > 0
-    assert t > 0
+    if not (a > 0 and b > 0 and c > 0 and t > 0):  # skip update
+        raise Exception("Negative parameters")
 
     # 2F1 and first/second derivatives of argument, in arbitrary precision
     with mpmath.workdps(dps):
@@ -302,19 +299,24 @@ def gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij):
                 "'max_shape' to a large value (e.g. 1000) will prevent degenerate "
                 "marginals, but the results should be treated with care."
             )
+    except:  # skip update
+        print("skipping", [a_i, b_i, a_j, b_j, y_ij, mu_ij])  # DEBUG
+        logconst = np.nan
+        proj_i = np.array([a_i, b_i])
+        proj_j = np.array([a_j, b_j])
 
     return logconst, np.array(proj_i), np.array(proj_j)
 
 
 def mutation_sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij):
-    """
+    r"""
     Calculate gamma sufficient statistics for the PDF proportional to:
-    
+
     ..math::
 
-        p(x) = \int_0^\infty \int_0^{t_i} Unif(x | t_i, t_j) 
+        p(x) = \int_0^\infty \int_0^{t_i} Unif(x | t_i, t_j)
         Ga(t_i | a_i, b_i) Ga(t_j | a_j b_j) Po(y | \mu_ij (t_i - t_j)) dt_j dt_i
-    
+
     which models the time :math:`x` of a mutation uniformly distributed between
     parent age :math:`t_i` and child age :math:`t_j`, on a branch with
     :math:`y_{ij}` mutations and total mutation rate :math:`\mu_{ij}`.
@@ -327,8 +329,12 @@ def mutation_sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij):
     t_m = t_i / 2 + t_j / 2
 
     # E[log t_m]
-    f_i, _, ln_t_i, _, _ = sufficient_statistics(a_i + 1, b_i, a_j, b_j, y_ij - 1, mu_ij)
-    f_j, _, _, _, ln_t_j = sufficient_statistics(a_i, b_i, a_j + 1, b_j, y_ij - 1, mu_ij)
+    f_i, _, ln_t_i, _, _ = sufficient_statistics(
+        a_i + 1, b_i, a_j, b_j, y_ij - 1, mu_ij
+    )
+    f_j, _, _, _, ln_t_j = sufficient_statistics(
+        a_i, b_i, a_j + 1, b_j, y_ij - 1, mu_ij
+    )
     ln_t_m = np.exp(f_j - f) * (1.0 - ln_t_j) - np.exp(f_i - f) * (1.0 - ln_t_i)
 
     return t_m, ln_t_m
@@ -337,12 +343,12 @@ def mutation_sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij):
 def mutation_mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij):
     r"""
     Calculate mean and variance of the PDF proportional to:
-    
+
     ..math::
 
-        p(x) = \int_0^\infty \int_0^{t_i} Unif(x | t_i, t_j) 
+        p(x) = \int_0^\infty \int_0^{t_i} Unif(x | t_i, t_j)
         Ga(t_i | a_i, b_i) Ga(t_j | a_j b_j) Po(y | \mu_ij (t_i - t_j)) dt_j dt_i
-    
+
     which models the time :math:`x` of a mutation uniformly distributed between
     parent age :math:`t_i` and child age :math:`t_j`, on a branch with
     :math:`y_{ij}` mutations and total mutation rate :math:`\mu_{ij}`.
@@ -351,29 +357,29 @@ def mutation_mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij):
     """
 
     # E[t_m]
-    #f, t_i, _, t_j, _ = sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij)
+    # f, t_i, _, t_j, _ = sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij)
     f, t_i, _, t_j, _ = mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij)
     t_m = t_i / 2 + t_j / 2
 
     # V[t_m]
-    #f_i, *_ = sufficient_statistics(a_i + 2, b_i, a_j, b_j, y_ij, mu_ij)
-    #f_ij, *_ = sufficient_statistics(a_i + 1, b_i, a_j + 1, b_j, y_ij, mu_ij)
-    #f_j, *_ = sufficient_statistics(a_i, b_i, a_j + 2, b_j, y_ij, mu_ij)
+    # f_i, *_ = sufficient_statistics(a_i + 2, b_i, a_j, b_j, y_ij, mu_ij)
+    # f_ij, *_ = sufficient_statistics(a_i + 1, b_i, a_j + 1, b_j, y_ij, mu_ij)
+    # f_j, *_ = sufficient_statistics(a_i, b_i, a_j + 2, b_j, y_ij, mu_ij)
     f_i, *_ = mean_and_variance(a_i + 2, b_i, a_j, b_j, y_ij, mu_ij)
     f_ij, *_ = mean_and_variance(a_i + 1, b_i, a_j + 1, b_j, y_ij, mu_ij)
     f_j, *_ = mean_and_variance(a_i, b_i, a_j + 2, b_j, y_ij, mu_ij)
-    va_t_m = 1/3 * (np.exp(f_i - f) + np.exp(f_ij - f) + np.exp(f_j - f)) - t_m ** 2
+    va_t_m = 1 / 3 * (np.exp(f_i - f) + np.exp(f_ij - f) + np.exp(f_j - f)) - t_m**2
 
     return t_m, va_t_m
 
 
-def mutation_gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij, leaf = False):
+def mutation_gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij, leaf=False):
     r"""
     Match a gamma distribution via KL minimization to the potential function
-    
+
     ..math::
 
-        p(x) = \int_0^\infty \int_0^{t_i} Unif(x | t_i, t_j) 
+        p(x) = \int_0^\infty \int_0^{t_i} Unif(x | t_i, t_j)
         Ga(t_i | a_i, b_i) Ga(t_j | a_j b_j) Po(y | \mu_ij (t_i - t_j)) dt_j dt_i
 
     which models the time :math:`x` of a mutation uniformly distributed between
@@ -397,9 +403,7 @@ def mutation_gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij, leaf = False):
         proj_t = approximate_gamma_kl(t, ln_t)
     else:
         try:
-            t, ln_t = mutation_sufficient_statistics(
-                a_i, b_i, a_j, b_j, y_ij, mu_ij
-            )
+            t, ln_t = mutation_sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij)
             proj_t = approximate_gamma_kl(t, ln_t)
         except (hypergeo.Invalid2F1, KLMinimizationFailed):
             try:
@@ -408,9 +412,7 @@ def mutation_gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij, leaf = False):
                     f"{a_i} {b_i} {a_j} {b_j} {y_ij} {mu_ij},"
                     f"matching mean and variance instead"
                 )
-                t, va_t = mutation_mean_and_variance(
-                    a_i, b_i, a_j, b_j, y_ij, mu_ij
-                )
+                t, va_t = mutation_mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij)
                 proj_t = approximate_gamma_mom(t, va_t)
             except MPNoConvergence:
                 raise hypergeo.Invalid2F1(

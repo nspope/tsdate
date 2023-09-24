@@ -115,7 +115,7 @@ def _is_valid_2f1(f1, f2, a, b, c, z, tol):
 
     See Eq. 6 in https://doi.org/10.1016/j.cpc.2007.11.007
     """
-    if z == 0.0:
+    if np.isclose(z, 0.0):
         return np.abs(f1 - a * b / c) < tol
     u = c - (a + b + 1) * z
     v = a * b
@@ -142,7 +142,7 @@ def _hyp2f1_taylor_series(a, b, c, z):
     if not (a >= 0.0 and b >= 0.0 and c > 0.0):
         raise Invalid2F1("Negative parameters in Taylor series")
 
-    if z == 0.0:
+    if np.isclose(z, 0.0):
         sign = 1.0
         val = 0.0
         da = 0.0
@@ -258,6 +258,81 @@ def _hyp2f1_recurrence(a, b, c, z):
     return f, s, da, db, dc, dz, p
 
 
+@numba.njit("UniTuple(float64, 7)(float64, float64, float64, float64)")
+def _hyp2f1_recurrence_safe(a, b, c, z):
+    """
+    Evaluate 2F1(a, -b; c; z) where b is an integer using (0, -1, 0) recurrence.
+    See https://doi.org/10.48550/arXiv.1909.10765
+
+    Returns log function value, sign, gradient, and second derivative wrt z. The
+    derivatives are divided by the function value.
+
+    Special handling is used on the rare occasions when one or more of the
+    polynomial terms is zero (which should only occur if `z == c / a`).
+    """
+    assert b % 1.0 == 0.0 and b >= 0
+    assert np.abs(c) >= np.abs(a)
+    assert z > 1.0
+    f0 = 1.0
+    f1 = 1 - a * z / c
+    s0 = 1.0
+    s1 = np.sign(f1)
+    f1 = 1.0 if s1 == 0 else f1
+    g0 = np.zeros(4)  # df/da df/db df/dc df/dz
+    g1 = np.array([-z / c, 0.0, a * z / c**2, -a / c]) / f1
+    p0 = 0.0  # d2f/dz2
+    p1 = 0.0
+    f0 = np.log(np.abs(f0))
+    f1 = np.log(np.abs(f1))
+    if b == 0:
+        return f0, s0, g0[0], g0[1], g0[2], g0[3], p0
+    if b == 1:
+        if s1 == 0.0:
+            return -np.inf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        else:
+            return f1, s1, g1[0], g1[1], g1[2], g1[3], p1
+    for n in range(1, int(b)):
+        ak = n * (z - 1) / (c + n)
+        dak = np.array([0.0, 0.0, -ak / (c + n), ak / (z - 1)])
+        bk = (2 * n + c - z * (a + n)) / (c + n)
+        dbk = np.array([-z / (c + n), 0.0, (1 - bk) / (c + n), -(a + n) / (c + n)])
+        u = s0 * np.exp(f0 - f1)
+        v = s1 * bk + u * ak
+        s = np.sign(v)
+        f = np.log(np.abs(v)) + f1
+        v = 1.0 if s == 0 else v
+        f = 0.0 if s == 0 else np.log(np.abs(v)) + f1
+        if s == 0 or s1 == 0 or s0 == 0:
+            g = (
+                g1 * bk * np.exp(f1)
+                + g0 * ak * np.exp(f0)
+                + s1 * dbk * np.exp(f1)
+                + s0 * dak * np.exp(f0)
+            ) / v
+            p = (
+                p1 * bk * np.exp(f1)
+                + p0 * ak * np.exp(f0)
+                + 2 / (c + n) * (np.exp(f0) * g0[3] * n - np.exp(f1) * g1[3] * (a + n))
+            ) / v
+        else:
+            g = (g1 * bk * s1 + g0 * u * ak + dbk * s1 + dak * u) / v
+            p = (
+                p1 * bk * s1
+                + p0 * u * ak
+                + 2 / (c + n) * (u * g0[3] * n - s1 * g1[3] * (a + n))
+            ) / v
+        f1, f0 = f, f1
+        s1, s0 = s, s1
+        g1, g0 = g, g1
+        p1, p0 = p, p1
+    if s == 0:
+        return -np.inf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    if not _is_valid_2f1(g[3], p, a, -b, c, z, _HYP2F1_TOL):
+        raise Invalid2F1("Cancellation error in polynomial")
+    da, db, dc, dz = g
+    return f, s, da, db, dc, dz, p
+
+
 @numba.njit(
     "UniTuple(float64, 6)(float64, float64, float64, float64, float64, float64)"
 )
@@ -320,7 +395,7 @@ def _hyp2f1_dlmf1583_first(a_i, b_i, a_j, b_j, y, mu):
     )
 
     # 2F1(a, -y; c; z) via backwards recurrence
-    val, sign, da, _, dc, dz, d2z = _hyp2f1_recurrence(a, y, c, z)
+    val, sign, da, _, dc, dz, d2z = _hyp2f1_recurrence_safe(a, y, c, z)
 
     # map gradient to parameters
     da_i = dc - _digamma(a_i + a_j) + _digamma(a_i)

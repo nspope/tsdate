@@ -269,6 +269,8 @@ def _hyp2f1_recurrence_safe(a, b, c, z):
 
     Special handling is used on the rare occasions when one or more of the
     polynomial terms is zero (which should only occur if `z == c / a`).
+
+    TODO: more testing against non-safe
     """
     assert b % 1.0 == 0.0 and b >= 0
     assert np.abs(c) >= np.abs(a)

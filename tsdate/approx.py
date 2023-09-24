@@ -42,6 +42,10 @@ class KLMinimizationFailed(Exception):
     pass
 
 
+class DegenerateUpdate(Exception):
+    pass
+
+
 @numba.njit("UniTuple(float64, 3)(float64, float64)")
 def approximate_log_moments(mean, variance):
     """
@@ -178,10 +182,10 @@ def sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij):
     b = a_j
     c = a_j + y_ij + 1
     t = mu_ij + b_i
-    z = (mu_ij - b_j) / t
+    # z = (mu_ij - b_j) / t
 
     if not (a > 0 and b > 0 and c > 0 and t > 0):  # skip update
-        raise Exception("Negative parameters")
+        raise DegenerateUpdate("Invalid parameter values in EP update")
 
     log_f, sign_f, da_i, db_i, da_j, db_j = hypergeo._hyp2f1(
         a_i, b_i, a_j, b_j, y_ij, mu_ij
@@ -299,8 +303,8 @@ def gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij):
                 "'max_shape' to a large value (e.g. 1000) will prevent degenerate "
                 "marginals, but the results should be treated with care."
             )
-    except:  # skip update
-        print("skipping", [a_i, b_i, a_j, b_j, y_ij, mu_ij])  # DEBUG
+    except DegenerateUpdate:  # skip update
+        print("Skipping:", [a_i, b_i, a_j, b_j, y_ij, mu_ij])  # DEBUG
         logconst = np.nan
         proj_i = np.array([a_i, b_i])
         proj_j = np.array([a_j, b_j])

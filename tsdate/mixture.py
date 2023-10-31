@@ -63,21 +63,24 @@ def _conditional_posterior(prior_weight, prior_shape, prior_rate, shape, rate):
         post_shape = prior_shape[i] + shape - 1
         post_rate = prior_rate[i] + rate
         # TODO: if observation shape parameters are too small, negative shape
-        # parameters will occur. Could skip observation when doing updates, but
-        # will need a workaround for projection.
-        assert post_shape > 0 and post_rate > 0
-        E[i] = (
-            prior_shape[i] * np.log(prior_rate[i])
-            - hypergeo._gammaln(prior_shape[i])
-            + shape * np.log(rate)
-            - hypergeo._gammaln(shape)
-            + hypergeo._gammaln(post_shape)
-            - post_shape * np.log(post_rate)
-            + np.log(prior_weight[i])
-        )
-        E_t[i] = post_shape / post_rate
-        E_logt[i] = hypergeo._digamma(post_shape) - np.log(post_rate)
-        E_tlogt[i] = E_t[i] * E_logt[i] + E_t[i] / post_shape
+        # parameters will occur. Here we skip the component. It might be better
+        # to skip the observation entirely.
+        # assert post_shape > 0 and post_rate > 0
+        if post_shape > 0 and post_rate > 0:
+            E[i] = (
+                prior_shape[i] * np.log(prior_rate[i])
+                - hypergeo._gammaln(prior_shape[i])
+                + shape * np.log(rate)
+                - hypergeo._gammaln(shape)
+                + hypergeo._gammaln(post_shape)
+                - post_shape * np.log(post_rate)
+                + np.log(prior_weight[i])
+            )
+            E_t[i] = post_shape / post_rate
+            E_logt[i] = hypergeo._digamma(post_shape) - np.log(post_rate)
+            E_tlogt[i] = E_t[i] * E_logt[i] + E_t[i] / post_shape
+        else:
+            print("Bad prior conditional")  # DEBUG
 
     return E, E_t, E_logt, E_tlogt
 
@@ -109,6 +112,7 @@ def _em_update(prior_weight, prior_shape, prior_rate, shape, rate):
 
         # convert evidence to posterior weights
         norm_const = np.log(np.sum(np.exp(E - np.max(E)))) + np.max(E)
+        assert np.isfinite(norm_const)
         weight = np.exp(E - norm_const)
 
         # weighted contributions to sufficient statistics
@@ -143,6 +147,7 @@ def _gamma_projection(prior_weight, prior_shape, prior_rate, shape, rate):
             prior_weight, prior_shape, prior_rate, alpha, beta
         )
         norm = np.log(np.sum(np.exp(E - np.max(E)))) + np.max(E)
+        assert np.isfinite(norm)  # TODO: skip if assert triggered?
         weight = np.exp(E - norm)
         t = np.sum(weight * E_t)
         logt = np.sum(weight * E_logt)

@@ -570,7 +570,7 @@ class VariationalLikelihoods:
             return np.array([y + 1, mu])
 
     @staticmethod
-    def get_mut_edges(ts, downsample=True):
+    def get_mut_edges(ts, downsample=False):
         """
         Get the number of mutations on each edge in the tree sequence.
         Also the span

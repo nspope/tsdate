@@ -182,9 +182,9 @@ def sufficient_statistics(a_i, b_i, a_j, b_j, y_ij, mu_ij):
     b = a_j
     c = a_j + y_ij + 1
     t = mu_ij + b_i
-    # z = (mu_ij - b_j) / t
+    z = (mu_ij - b_j) / t
 
-    if not (a > 0 and b > 0 and c > 0 and t > 0):  # skip update
+    if not (a > 0 and b > 0 and c > 0 and t > 0 and z < 1):  # skip update
         raise DegenerateUpdate("Invalid parameter values in EP update")
 
     log_f, sign_f, da_i, db_i, da_j, db_j = hypergeo._hyp2f1(
@@ -240,7 +240,7 @@ def mean_and_variance(a_i, b_i, a_j, b_j, y_ij, mu_ij, dps=100, maxterms=1e4):
     t = mu_ij + b_i
     z = (mu_ij - b_j) / t
 
-    if not (a > 0 and b > 0 and c > 0 and t > 0):  # skip update
+    if not (a > 0 and b > 0 and c > 0 and t > 0 and z < 1):  # skip update
         raise DegenerateUpdate("Invalid parameter values in EP update")
 
     # 2F1 and first/second derivatives of argument, in arbitrary precision
@@ -291,6 +291,7 @@ def gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij):
         proj_i = approximate_gamma_kl(t_i, ln_t_i)
         proj_j = approximate_gamma_kl(t_j, ln_t_j)
     except (hypergeo.Invalid2F1, KLMinimizationFailed):
+        print("EXCEPT::Invalid2F1:", [a_i, b_i, a_j, b_j, y_ij, mu_ij])  # DEBUG
         try:
             logging.info(
                 f"Matching sufficient statistics failed with parameters: "
@@ -303,6 +304,9 @@ def gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij):
             proj_i = approximate_gamma_mom(t_i, va_t_i)
             proj_j = approximate_gamma_mom(t_j, va_t_j)
         except MPNoConvergence:
+            print(
+                "EXCEPT::MPNoConvergence:", [a_i, b_i, a_j, b_j, y_ij, mu_ij]
+            )  # DEBUG
             raise hypergeo.Invalid2F1(
                 "Hypergeometric series does not converge; the approximate "
                 "marginal is likely degenerate.  This may reflect a topological "
@@ -311,7 +315,12 @@ def gamma_projection(a_i, b_i, a_j, b_j, y_ij, mu_ij):
                 "marginals, but the results should be treated with care."
             )
     except DegenerateUpdate:  # skip update
-        print("Skipping:", [a_i, b_i, a_j, b_j, y_ij, mu_ij])  # DEBUG
+        print("EXCEPT::DegenerateUpdate:", [a_i, b_i, a_j, b_j, y_ij, mu_ij])  # DEBUG
+        logconst = np.nan
+        proj_i = np.array([a_i, b_i])
+        proj_j = np.array([a_j, b_j])
+    except:  # noqa: E722, B001
+        print("EXCEPT::Other", [a_i, b_i, a_j, b_j, y_ij, mu_ij])  # DEBUG
         logconst = np.nan
         proj_i = np.array([a_i, b_i])
         proj_j = np.array([a_j, b_j])

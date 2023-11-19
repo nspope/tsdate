@@ -79,8 +79,6 @@ def _conditional_posterior(prior_weight, prior_shape, prior_rate, shape, rate):
             E_t[i] = post_shape / post_rate
             E_logt[i] = hypergeo._digamma(post_shape) - np.log(post_rate)
             E_tlogt[i] = E_t[i] * E_logt[i] + E_t[i] / post_shape
-        else:
-            print("Bad prior conditional")  # DEBUG
 
     return E, E_t, E_logt, E_tlogt
 

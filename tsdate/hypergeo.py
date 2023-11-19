@@ -395,7 +395,7 @@ def _hyp2f1_dlmf1583_first(a_i, b_i, a_j, b_j, y, mu):
     )
 
     # 2F1(a, -y; c; z) via backwards recurrence
-    val, sign, da, _, dc, dz, d2z = _hyp2f1_recurrence_safe(a, y, c, z)
+    val, sign, da, _, dc, dz, d2z = _hyp2f1_recurrence(a, y, c, z)
 
     # map gradient to parameters
     da_i = dc - _digamma(a_i + a_j) + _digamma(a_i)
